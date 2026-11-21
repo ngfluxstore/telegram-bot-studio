@@ -13,6 +13,9 @@ POOL_MIN_SIZE = 1
 POOL_MAX_SIZE = 10
 COMMAND_TIMEOUT = 10.0
 
+
+# --- Database schema ---------------------------------------------------------
+
 CREATE_USERS_TABLE = """
 CREATE TABLE IF NOT EXISTS users (
     telegram_id BIGINT PRIMARY KEY,
@@ -90,7 +93,6 @@ CREATE TABLE IF NOT EXISTS products (
 );
 """
 
-# Safe migrations: existing products and orders are retained.
 MIGRATE_PRODUCTS_TABLE = """
 ALTER TABLE products
 ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT '';
@@ -146,8 +148,10 @@ COMMAND_COLUMNS = (
 )
 
 
+# --- Database connection ----------------------------------------------------
+
 async def create_pool(dsn: str) -> asyncpg.Pool:
-    """Connect to PostgreSQL and initialize the database."""
+    """Connect to PostgreSQL, initialize schema and seed catalogue."""
 
     pool = await asyncpg.create_pool(
         dsn,
@@ -167,7 +171,11 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
             await conn.execute(CREATE_ORDERS_TABLE)
             await conn.execute(CREATE_PAYMENTS_TABLE)
 
-        logger.info("PostgreSQL pool ready. Marketplace schema initialized.")
+        await seed_full_catalog(pool)
+
+        logger.info(
+            "PostgreSQL ready. NGFLUX STORE catalogue initialized."
+        )
         return pool
 
     except Exception:
@@ -196,18 +204,22 @@ async def close_pool(pool) -> None:
 def _command_to_dict(row):
     data = dict(row)
     keyboard = data.get("keyboard")
+
     if isinstance(keyboard, str):
         try:
             data["keyboard"] = json.loads(keyboard)
         except (ValueError, TypeError):
             data["keyboard"] = None
+
     return data
 
 
 async def list_commands(pool, *, enabled_only=False):
     query = f"SELECT {COMMAND_COLUMNS} FROM commands"
+
     if enabled_only:
         query += " WHERE enabled = TRUE"
+
     query += " ORDER BY name;"
     return [_command_to_dict(row) for row in await pool.fetch(query)]
 
@@ -248,6 +260,7 @@ async def update_command(
             "SELECT name FROM commands WHERE id=$1 FOR UPDATE;",
             command_id,
         )
+
         if old_name is None:
             return None
 
@@ -270,10 +283,13 @@ async def update_command(
             rows = await conn.fetch(
                 "SELECT id, keyboard FROM commands WHERE keyboard IS NOT NULL;"
             )
+
             for item in rows:
                 layout = item["keyboard"]
+
                 if isinstance(layout, str):
                     layout = json.loads(layout)
+
                 updated = [
                     [
                         f"/{name}" if v == f"/{old_name}" else v
@@ -281,6 +297,7 @@ async def update_command(
                     ]
                     for group in layout
                 ]
+
                 if updated != layout:
                     await conn.execute(
                         "UPDATE commands SET keyboard=$2, updated_at=now() "
@@ -301,6 +318,7 @@ async def update_command(
             media_url, json.dumps(keyboard) if keyboard else None,
             enabled, show_in_menu,
         )
+
     return _command_to_dict(row) if row else None
 
 
@@ -315,18 +333,26 @@ async def command_dependencies(pool, name):
     menu_count = int(await pool.fetchval(
         "SELECT count(*) FROM menu_buttons WHERE command_name=$1;", name
     ))
+
     response_count = 0
     rows = await pool.fetch(
         "SELECT keyboard FROM commands WHERE keyboard IS NOT NULL;"
     )
+
     for row in rows:
         layout = row["keyboard"]
+
         if isinstance(layout, str):
             layout = json.loads(layout)
+
         response_count += sum(
             value == f"/{name}" for group in layout for value in group
         )
-    return {"menu_buttons": menu_count, "response_buttons": response_count}
+
+    return {
+        "menu_buttons": menu_count,
+        "response_buttons": response_count,
+    }
 
 
 async def update_command_keyboard(pool, command_id, keyboard):
@@ -344,8 +370,10 @@ async def update_command_keyboard(pool, command_id, keyboard):
 
 async def list_menu_buttons(pool, *, enabled_only=False):
     query = "SELECT * FROM menu_buttons"
+
     if enabled_only:
         query += " WHERE enabled=TRUE"
+
     query += " ORDER BY row_index, sort_order, id;"
     return [dict(row) for row in await pool.fetch(query)]
 
@@ -436,11 +464,13 @@ async def clear_audit_log(pool):
 def _product_to_dict(row):
     data = dict(row)
     options = data.get("pricing_options", [])
+
     if isinstance(options, str):
         try:
             options = json.loads(options)
         except (ValueError, TypeError):
             options = []
+
     data["pricing_options"] = options or []
     return data
 
@@ -473,16 +503,20 @@ async def list_products(
 
     if active_only:
         conditions.append("active=TRUE")
+
     if category:
         args.append(category)
         conditions.append(f"category=${len(args)}")
+
     if country:
         args.append(country)
         conditions.append(f"country=${len(args)}")
 
     query = "SELECT * FROM products"
+
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
+
     query += " ORDER BY created_at DESC;"
 
     rows = await pool.fetch(query, *args)
@@ -539,8 +573,7 @@ async def deactivate_product(pool, product_id):
     return result.endswith("1")
 
 
-# --- Wallet catalogue seed data ---------------------------------------------
-# Normal customer prices only. No reseller prices or rental services.
+# --- Wallet catalogue: 22 products ------------------------------------------
 
 WALLET_CATALOG = [
     {
@@ -732,9 +765,171 @@ WALLET_CATALOG = [
 ]
 
 
+# --- Other product catalogue ------------------------------------------------
+
+PRODUCT_CATALOG = [
+    {
+        "name": "Spotify",
+        "category": "Entertainment & Subscriptions",
+        "price": "2",
+        "description": "Spotify subscription plans.",
+        "features": "Private account options. Subscription durations and plans vary.",
+        "pricing_options": [
+            {"label": "Individual - 1 Month", "price": "2"},
+            {"label": "Individual - 3 Months", "price": "5"},
+            {"label": "Individual - 6 Months", "price": "9"},
+            {"label": "Individual - 1 Year", "price": "17"},
+            {"label": "Duo - 1 Month", "price": "3.50"},
+            {"label": "Duo - 3 Months", "price": "5"},
+            {"label": "Duo - 6 Months", "price": "10"},
+            {"label": "Duo - 1 Year", "price": "20"},
+            {"label": "Family - 1 Month", "price": "4"},
+            {"label": "Student - 1 Month", "price": "5"},
+        ],
+    },
+    {
+        "name": "Netflix",
+        "category": "Entertainment & Subscriptions",
+        "price": "4",
+        "description": "Netflix subscription plans.",
+        "features": "Basic plan requires VPN during the first month, according to the supplied listing.",
+        "pricing_options": [
+            {"label": "Premium 4K", "price": "8"},
+            {"label": "Standard 1080p", "price": "6"},
+            {"label": "Basic 720p", "price": "4"},
+        ],
+    },
+    {
+        "name": "YouTube Premium",
+        "category": "Entertainment & Subscriptions",
+        "price": "3",
+        "description": "YouTube Premium subscription.",
+        "pricing_options": [
+            {"label": "Individual - 1 Month", "price": "3"},
+            {"label": "Family - 1 Month", "price": "6"},
+        ],
+    },
+    {
+        "name": "Duolingo Super",
+        "category": "Entertainment & Subscriptions",
+        "price": "6",
+        "description": "Duolingo Super and Lite subscription options.",
+        "pricing_options": [
+            {"label": "Super Family - 1 Year", "price": "38"},
+            {"label": "Super Individual - 1 Year", "price": "38"},
+            {"label": "Lite - 1 Year", "price": "12"},
+            {"label": "Super Individual - 1 Month", "price": "6"},
+        ],
+    },
+    {
+        "name": "Canva Pro",
+        "category": "Other Products",
+        "price": "5",
+        "description": "Canva Pro for professional design and content creation.",
+        "features": "Background remover, Magic Resize, premium templates and elements, Brand Kit, Magic Studio AI tools and 1TB cloud storage.",
+        "compatibility": "Android, iOS and PC.",
+    },
+    {
+        "name": "CapCut Pro",
+        "category": "Other Products",
+        "price": "5",
+        "description": "CapCut Pro for professional video editing.",
+        "features": "Premium effects and transitions, no-watermark exports, AI editing, auto captions, voice enhancement, background removal and cloud sync.",
+        "compatibility": "Android, iOS and PC.",
+    },
+    {
+        "name": "Content Creator Bundle",
+        "category": "Other Products",
+        "price": "9",
+        "description": "Canva Pro + CapCut Pro bundle.",
+        "features": "Includes Canva Pro and CapCut Pro.",
+        "compatibility": "Android, iOS and PC.",
+    },
+    {
+        "name": "Nitro Profit Blueprint Course",
+        "category": "Digital Products",
+        "price": "50",
+        "description": "Beginner-friendly Discord Nitro business course. Original price $100; sale price $50.",
+        "features": "Nitro basics, affordable and legitimate sourcing, reselling fundamentals, trusted seller strategies and scam avoidance.",
+    },
+    {
+        "name": "Nigeria eSIM",
+        "category": "Digital Products",
+        "country": "Nigeria",
+        "price": "15",
+        "description": "International eSIM - Nigeria.",
+    },
+    {
+        "name": "Argentina eSIM",
+        "category": "Digital Products",
+        "country": "Argentina",
+        "price": "75",
+        "description": "International eSIM - Argentina.",
+    },
+    {
+        "name": "Ukraine eSIM",
+        "category": "Digital Products",
+        "country": "Ukraine",
+        "price": "25",
+        "description": "International eSIM - Ukraine.",
+    },
+    {
+        "name": "Indonesia eSIM",
+        "category": "Digital Products",
+        "country": "Indonesia",
+        "price": "45",
+        "description": "International eSIM - Indonesia.",
+    },
+    {
+        "name": "United Kingdom eSIM",
+        "category": "Digital Products",
+        "country": "United Kingdom",
+        "price": "60",
+        "description": "International eSIM - United Kingdom.",
+    },
+    {
+        "name": "India eSIM",
+        "category": "Digital Products",
+        "country": "India",
+        "price": "65",
+        "description": "International eSIM - India.",
+    },
+    {
+        "name": "Nigerian Gmail Account",
+        "category": "Digital Products",
+        "country": "Nigeria",
+        "price": "0.35",
+        "description": "Nigerian Gmail account. Listed price: $0.35 each.",
+    },
+    {
+        "name": "Indian Gmail Account",
+        "category": "Digital Products",
+        "country": "India",
+        "price": "1",
+        "description": "Indian Gmail account. Listed price: $1 each.",
+    },
+    {
+        "name": "Egyptian Gmail Account",
+        "category": "Digital Products",
+        "country": "Egypt",
+        "price": "5",
+        "description": "Egyptian Gmail account. Confirm quantity pricing with support.",
+    },
+    {
+        "name": "Indonesian Gmail Account",
+        "category": "Digital Products",
+        "country": "Indonesia",
+        "price": "0.50",
+        "description": "Indonesian Gmail account. Listed price: $0.50 each.",
+    },
+]
+
+
+# --- Catalogue seeding -------------------------------------------------------
+
 async def seed_wallet_catalog(pool):
     """
-    Add the supplied wallet catalogue once.
+    Insert the 22 wallet products.
     Existing matching products are not overwritten.
     """
 
@@ -749,7 +944,8 @@ async def seed_wallet_catalog(pool):
                   AND lower(country)=lower($2)
                 LIMIT 1;
                 """,
-                item["name"], item["country"],
+                item["name"],
+                item["country"],
             )
 
             if exists:
@@ -758,19 +954,107 @@ async def seed_wallet_catalog(pool):
             await conn.execute(
                 """
                 INSERT INTO products
-                (name, description, category, price, currency, country,
-                 features, compatibility, pricing_options)
-                VALUES ($1,$2,'Wallets',$3,'USD',$4,$5,$6,$7);
+                (
+                    name, description, category, price, currency,
+                    country, features, compatibility, limits,
+                    pricing_options
+                )
+                VALUES ($1,$2,$3,$4,'USD',$5,$6,$7,'',$8);
                 """,
                 item["name"],
                 item["description"],
+                "Wallets & Virtual Cards",
                 Decimal(item["price"]),
                 item["country"],
                 item.get("features", ""),
                 item.get("compatibility", ""),
                 json.dumps(item.get("pricing_options", [])),
             )
+
             added += 1
 
-    logger.info("Wallet catalogue seed completed. Added %s products.", added)
+    logger.info("Wallet catalogue: %s products added.", added)
     return added
+
+
+async def seed_product_catalog(pool):
+    """
+    Insert non-wallet catalogue products.
+    Existing matching products are not overwritten.
+    """
+
+    added = 0
+
+    async with pool.acquire() as conn, conn.transaction():
+        for item in PRODUCT_CATALOG:
+            country = item.get("country", "")
+
+            exists = await conn.fetchval(
+                """
+                SELECT id FROM products
+                WHERE lower(name)=lower($1)
+                  AND lower(country)=lower($2)
+                LIMIT 1;
+                """,
+                item["name"],
+                country,
+            )
+
+            if exists:
+                continue
+
+            await conn.execute(
+                """
+                INSERT INTO products
+                (
+                    name, description, category, price, currency,
+                    country, features, compatibility, limits,
+                    pricing_options
+                )
+                VALUES ($1,$2,$3,$4,'USD',$5,$6,$7,'',$8);
+                """,
+                item["name"],
+                item.get("description", ""),
+                item["category"],
+                Decimal(item["price"]),
+                country,
+                item.get("features", ""),
+                item.get("compatibility", ""),
+                json.dumps(item.get("pricing_options", [])),
+            )
+
+            added += 1
+
+    logger.info("General catalogue: %s products added.", added)
+    return added
+
+
+async def seed_full_catalog(pool):
+    """
+    Seed all NGFLUX STORE catalogue products.
+    Existing products are preserved.
+    """
+
+    wallet_count = await seed_wallet_catalog(pool)
+
+    # Migrate old wallet category names to the official category.
+    await pool.execute(
+        """
+        UPDATE products
+        SET category = 'Wallets & Virtual Cards',
+            updated_at = now()
+        WHERE lower(category) = 'wallets';
+        """
+    )
+
+    other_count = await seed_product_catalog(pool)
+
+    total = wallet_count + other_count
+
+    logger.info(
+        "NGFLUX STORE catalogue initialization complete. "
+        "%s new products added.",
+        total,
+    )
+
+    return total
