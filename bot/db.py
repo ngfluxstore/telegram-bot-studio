@@ -3,6 +3,7 @@
 
 import json
 import logging
+from decimal import Decimal
 
 import asyncpg
 
@@ -154,7 +155,6 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
             await conn.execute(CREATE_MENU_BUTTONS_TABLE)
             await conn.execute(CREATE_AUDIT_LOG_TABLE)
 
-            # Marketplace tables
             await conn.execute(CREATE_PRODUCTS_TABLE)
             await conn.execute(CREATE_ORDERS_TABLE)
             await conn.execute(CREATE_PAYMENTS_TABLE)
@@ -564,3 +564,135 @@ async def list_audit_log(
 async def clear_audit_log(pool: asyncpg.Pool) -> int:
     result = await pool.execute("DELETE FROM audit_log;")
     return int(result.rsplit(" ", 1)[-1])
+
+
+# --- NGFLUX STORE product management ----------------------------------------
+
+async def create_product(
+    pool: asyncpg.Pool,
+    *,
+    name: str,
+    description: str,
+    category: str,
+    price,
+    currency: str = "USD",
+) -> dict:
+    """Create a new marketplace product."""
+
+    row = await pool.fetchrow(
+        """
+        INSERT INTO products
+            (name, description, category, price, currency)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING *;
+        """,
+        name,
+        description,
+        category,
+        Decimal(str(price)),
+        currency,
+    )
+
+    return dict(row)
+
+
+async def list_products(
+    pool: asyncpg.Pool,
+    *,
+    active_only: bool = True,
+    category: str | None = None,
+) -> list[dict]:
+    """List marketplace products."""
+
+    if category:
+        rows = await pool.fetch(
+            """
+            SELECT * FROM products
+            WHERE category = $1
+              AND ($2::boolean = FALSE OR active = TRUE)
+            ORDER BY created_at DESC;
+            """,
+            category,
+            active_only,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT * FROM products
+            WHERE ($1::boolean = FALSE OR active = TRUE)
+            ORDER BY created_at DESC;
+            """,
+            active_only,
+        )
+
+    return [dict(row) for row in rows]
+
+
+async def get_product(
+    pool: asyncpg.Pool,
+    product_id: int,
+) -> dict | None:
+    """Get one product by its ID."""
+
+    row = await pool.fetchrow(
+        "SELECT * FROM products WHERE id = $1;",
+        product_id,
+    )
+
+    return dict(row) if row is not None else None
+
+
+async def update_product(
+    pool: asyncpg.Pool,
+    product_id: int,
+    *,
+    name: str,
+    description: str,
+    category: str,
+    price,
+    currency: str,
+    active: bool,
+) -> dict | None:
+    """Update an existing product."""
+
+    row = await pool.fetchrow(
+        """
+        UPDATE products SET
+            name = $2,
+            description = $3,
+            category = $4,
+            price = $5,
+            currency = $6,
+            active = $7,
+            updated_at = now()
+        WHERE id = $1
+        RETURNING *;
+        """,
+        product_id,
+        name,
+        description,
+        category,
+        Decimal(str(price)),
+        currency,
+        active,
+    )
+
+    return dict(row) if row is not None else None
+
+
+async def deactivate_product(
+    pool: asyncpg.Pool,
+    product_id: int,
+) -> bool:
+    """Deactivate a product without deleting its order history."""
+
+    result = await pool.execute(
+        """
+        UPDATE products
+        SET active = FALSE, updated_at = now()
+        WHERE id = $1 AND active = TRUE;
+        """,
+        product_id,
+    )
+
+    return result.endswith("1")
