@@ -6,6 +6,8 @@ import os
 from decimal import Decimal, InvalidOperation
 
 from telegram import (
+    BotCommand,
+    BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
@@ -31,13 +33,23 @@ DB_KEY = "db"
 
 _LOCAL_MESSAGE_COUNTS: dict[int, int] = {}
 
+# Customer commands shown in Telegram's Commands menu.
 BOT_COMMANDS = (
-    ("start", "Show the main menu"),
-    ("shop", "Browse NGFLUX STORE products"),
+    ("start", "Open the main menu"),
+    ("shop", "Browse store products"),
+    ("orders", "View your previous orders"),
+    ("payment", "View payment methods"),
+    ("support", "Contact customer support"),
     ("help", "Show help"),
-    ("about", "Show bot information"),
-    ("ping", "Check bot status"),
+    ("about", "About NGFLUX STORE"),
 )
+
+# Customer reply-keyboard buttons.
+MENU_SHOP = "🛍️ Shop Products"
+MENU_ORDERS = "📦 My Orders"
+MENU_PAYMENT = "💳 Payment Methods"
+MENU_HOME = "🏠 Main Menu"
+MENU_SUPPORT = "💬 Customer Support"
 
 MENU_HELP = "Help"
 MENU_ABOUT = "About"
@@ -47,14 +59,15 @@ HELP_TEXT = """NGFLUX STORE Commands:
 
 /start - Open the main menu
 /shop - Browse products
+/orders - View your previous orders
+/payment - View payment methods
+/support - Contact customer support
 /help - Show help
-/about - Store information
-/ping - Check bot status"""
+/about - Store information"""
 
 DYNAMIC_CALLBACK_PREFIX = "command:"
 PRODUCT_CALLBACK_PREFIX = "product:"
 
-# Conversation states
 (
     ADD_NAME,
     ADD_DESCRIPTION,
@@ -73,8 +86,6 @@ PRODUCT_CALLBACK_PREFIX = "product:"
 # --- General helpers ---------------------------------------------------------
 
 def _is_admin(update: Update) -> bool:
-    """Check whether the Telegram user is an authorized store admin."""
-
     user = update.effective_user
 
     if user is None:
@@ -104,19 +115,19 @@ async def _require_admin(update: Update) -> bool:
 
 
 def _main_menu_keyboard() -> ReplyKeyboardMarkup:
-    rows: list[list[str]] = [[MENU_HELP, MENU_ABOUT], [MENU_PING]]
-    custom_rows: dict[int, list[str]] = {}
+    """Display one clean, consistent customer menu."""
 
-    for button in commands.reply_menu_buttons():
-        custom_rows.setdefault(button["row_index"], []).append(button["label"])
-
-    rows.extend(custom_rows[index] for index in sorted(custom_rows))
+    rows = [
+        [MENU_SHOP, MENU_ORDERS],
+        [MENU_PAYMENT, MENU_SUPPORT],
+        [MENU_HOME],
+    ]
 
     return ReplyKeyboardMarkup(
         rows,
         resize_keyboard=True,
         is_persistent=True,
-        input_field_placeholder="Choose a menu item",
+        input_field_placeholder="Choose an NGFLUX STORE option",
     )
 
 
@@ -127,7 +138,7 @@ def _dynamic_commands_text() -> str:
         return ""
 
     lines = [f"/{name} - {description}" for name, description in items]
-    return "\n\nAvailable menu commands:\n" + "\n".join(lines)
+    return "\n\nAdditional commands:\n" + "\n".join(lines)
 
 
 def _dynamic_commands_keyboard() -> InlineKeyboardMarkup | None:
@@ -189,13 +200,13 @@ async def start(
             pool, user.id, user.username, user.first_name
         )
 
-    name = user.first_name if user.first_name else "friend"
+    name = user.first_name or "friend"
     greeting = "Welcome" if is_new else "Welcome back"
 
     await message.reply_text(
         f"{greeting}, {name}! Welcome to NGFLUX STORE.\n\n"
         "Your Trusted Digital Marketplace.\n\n"
-        "Choose a menu button below or type /shop to browse our products.",
+        "Choose an option from the menu below to get started.",
         reply_markup=_main_menu_keyboard(),
     )
 
@@ -206,15 +217,8 @@ async def start(
             "/addproduct - Add a product\n"
             "/products - View all products\n"
             "/editproduct ID - Edit a product\n"
-            "/deleteproduct ID - Deactivate a product"
-        )
-
-    dynamic_keyboard = _dynamic_commands_keyboard()
-
-    if dynamic_keyboard is not None:
-        await message.reply_text(
-            "Choose a command:",
-            reply_markup=dynamic_keyboard,
+            "/deleteproduct ID - Deactivate a product\n"
+            "/cancel - Cancel an active operation"
         )
 
 
@@ -225,13 +229,11 @@ async def help_command(
     del context
     message = update.effective_message
 
-    if message is None:
-        return
-
-    await message.reply_text(
-        HELP_TEXT + _dynamic_commands_text(),
-        reply_markup=_dynamic_commands_keyboard(),
-    )
+    if message is not None:
+        await message.reply_text(
+            HELP_TEXT + _dynamic_commands_text(),
+            reply_markup=_main_menu_keyboard(),
+        )
 
 
 async def about(
@@ -241,15 +243,15 @@ async def about(
     del context
     message = update.effective_message
 
-    if message is None:
-        return
-
-    await message.reply_text(
-        "NGFLUX STORE\n"
-        "Your Trusted Digital Marketplace.\n\n"
-        "We offer digital products, subscriptions, wallets and virtual cards.\n\n"
-        "Customer Support: @Ngfluxstore"
-    )
+    if message is not None:
+        await message.reply_text(
+            "NGFLUX STORE\n"
+            "Your Trusted Digital Marketplace.\n\n"
+            "We offer digital products, subscriptions, wallets "
+            "and virtual cards.\n\n"
+            "Customer Support: @Ngfluxstore",
+            reply_markup=_main_menu_keyboard(),
+        )
 
 
 async def ping(
@@ -263,23 +265,131 @@ async def ping(
         await message.reply_text("pong")
 
 
-async def menu_button(
+# --- Customer services -------------------------------------------------------
+
+async def payment_methods(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    await message.reply_text(
+        "💳 NGFLUX STORE PAYMENT METHODS\n\n"
+        "We currently support the following payment options:\n\n"
+        "• Binance Pay\n"
+        "• USDT\n"
+        "• BNB\n"
+        "• Litecoin (LTC)\n"
+        "• Bybit Pay\n\n"
+        "📌 To receive the correct payment details for your order, "
+        "please contact our support team.\n\n"
+        "We verify payments manually before processing orders.\n\n"
+        "Support: @Ngfluxstore",
+        reply_markup=_main_menu_keyboard(),
+    )
+
+
+async def customer_support(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "💬 Contact NGFLUX Support",
+                url="https://t.me/Ngfluxstore",
+            )
+        ]
+    ])
+
+    await message.reply_text(
+        "💬 NGFLUX STORE CUSTOMER SUPPORT\n\n"
+        "Need help with an order, payment, product or service?\n\n"
+        "Our support team is available to assist you.\n\n"
+        "Tap the button below to contact us.",
+        reply_markup=keyboard,
+    )
+
+
+async def my_orders(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     message = update.effective_message
+    user = update.effective_user
 
-    if message is None or not message.text:
+    if message is None or user is None:
         return
 
-    text = message.text.strip()
+    pool = _get_pool(context)
 
-    if text == MENU_HELP:
-        await help_command(update, context)
-    elif text == MENU_ABOUT:
-        await about(update, context)
-    elif text == MENU_PING:
-        await ping(update, context)
+    if pool is None:
+        await message.reply_text(
+            "Your order history is temporarily unavailable. "
+            "Please try again later."
+        )
+        return
+
+    try:
+        orders = await pool.fetch(
+            """
+            SELECT order_number, product_name, quantity,
+                   total_amount, currency, status, created_at
+            FROM orders
+            WHERE telegram_id = $1
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            user.id,
+        )
+
+    except Exception:
+        logger.exception("Could not retrieve customer orders")
+        await message.reply_text(
+            "I couldn't retrieve your orders right now. "
+            "Please contact @Ngfluxstore for assistance."
+        )
+        return
+
+    if not orders:
+        await message.reply_text(
+            "📦 YOUR ORDERS\n\n"
+            "You don't have any orders yet.\n\n"
+            "Visit Shop Products to explore what's available.",
+            reply_markup=_main_menu_keyboard(),
+        )
+        return
+
+    lines = ["📦 YOUR RECENT ORDERS\n"]
+
+    for order in orders:
+        order_number = order["order_number"]
+        created_at = order["created_at"]
+
+        lines.append(
+            f"\nOrder: {order_number}\n"
+            f"Product: {order['product_name']}\n"
+            f"Quantity: {order['quantity']}\n"
+            f"Total: {order['currency']} "
+            f"{order['total_amount']:,.2f}\n"
+            f"Status: {order['status']}\n"
+            f"Date: {created_at}"
+        )
+
+    await message.reply_text(
+        "\n".join(lines),
+        reply_markup=_main_menu_keyboard(),
+    )
 
 
 # --- Customer product catalogue ---------------------------------------------
@@ -288,8 +398,6 @@ async def shop(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Show active products from the NGFLUX STORE database."""
-
     message = update.effective_message
 
     if message is None:
@@ -311,7 +419,8 @@ async def shop(
             "🛍️ NGFLUX STORE PRODUCT CATALOGUE\n\n"
             "There are currently no products available.\n"
             "Please check back soon!\n\n"
-            "For assistance, contact @Ngfluxstore."
+            "For assistance, contact @Ngfluxstore.",
+            reply_markup=_main_menu_keyboard(),
         )
         return
 
@@ -337,15 +446,12 @@ async def product_details(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Display details of a selected product."""
-
     query = update.callback_query
 
     if query is None or query.data is None:
         return
 
     await query.answer()
-
     pool = _get_pool(context)
 
     if pool is None:
@@ -391,25 +497,19 @@ async def product_details(
         ]
     ])
 
-    await query.edit_message_text(
-        text,
-        reply_markup=keyboard,
-    )
+    await query.edit_message_text(text, reply_markup=keyboard)
 
 
 async def product_back(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
-    """Return the customer to the product catalogue."""
-
     query = update.callback_query
 
     if query is None:
         return
 
     await query.answer()
-
     pool = _get_pool(context)
 
     if pool is None:
@@ -527,6 +627,7 @@ async def add_name(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return ADD_NAME
 
@@ -551,6 +652,7 @@ async def add_description(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return ADD_DESCRIPTION
 
@@ -574,6 +676,7 @@ async def add_category(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return ADD_CATEGORY
 
@@ -598,6 +701,7 @@ async def add_price(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return ADD_PRICE
 
@@ -638,7 +742,6 @@ async def add_currency(
 
     data = context.user_data.get("new_product", {})
     data["currency"] = currency
-
     pool = _get_pool(context)
 
     if pool is None:
@@ -672,7 +775,6 @@ async def add_currency(
         )
 
     context.user_data.pop("new_product", None)
-
     return ConversationHandler.END
 
 
@@ -692,8 +794,7 @@ async def edit_product_start(
 
     if not context.args:
         await message.reply_text(
-            "Usage: /editproduct ID\n"
-            "Example: /editproduct 1"
+            "Usage: /editproduct ID\nExample: /editproduct 1"
         )
         return ConversationHandler.END
 
@@ -715,9 +816,7 @@ async def edit_product_start(
         await message.reply_text("Product not found.")
         return ConversationHandler.END
 
-    context.user_data["edit_product"] = {
-        "id": product_id,
-    }
+    context.user_data["edit_product"] = {"id": product_id}
 
     await message.reply_text(
         f"✏️ EDIT PRODUCT #{product_id}\n\n"
@@ -733,6 +832,7 @@ async def edit_name(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return EDIT_NAME
 
@@ -743,7 +843,6 @@ async def edit_name(
         return EDIT_NAME
 
     context.user_data["edit_product"]["name"] = name
-
     await message.reply_text(
         "Step 2 of 6: Enter the new description.\n"
         "Send - for an empty description."
@@ -757,6 +856,7 @@ async def edit_description(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return EDIT_DESCRIPTION
 
@@ -766,7 +866,6 @@ async def edit_description(
         description = ""
 
     context.user_data["edit_product"]["description"] = description
-
     await message.reply_text("Step 3 of 6: Enter the new category.")
 
     return EDIT_CATEGORY
@@ -777,6 +876,7 @@ async def edit_category(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return EDIT_CATEGORY
 
@@ -787,7 +887,6 @@ async def edit_category(
         return EDIT_CATEGORY
 
     context.user_data["edit_product"]["category"] = category
-
     await message.reply_text("Step 4 of 6: Enter the new price.")
 
     return EDIT_PRICE
@@ -798,6 +897,7 @@ async def edit_price(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
+
     if message is None or not message.text:
         return EDIT_PRICE
 
@@ -808,7 +908,6 @@ async def edit_price(
         return EDIT_PRICE
 
     context.user_data["edit_product"]["price"] = price
-
     await message.reply_text(
         "Step 5 of 6: Enter the currency code, for example USD."
     )
@@ -899,7 +998,6 @@ async def edit_active(
         )
 
     context.user_data.pop("edit_product", None)
-
     return ConversationHandler.END
 
 
@@ -919,8 +1017,7 @@ async def delete_product(
 
     if not context.args:
         await message.reply_text(
-            "Usage: /deleteproduct ID\n"
-            "Example: /deleteproduct 1"
+            "Usage: /deleteproduct ID\nExample: /deleteproduct 1"
         )
         return
 
@@ -983,7 +1080,43 @@ async def echo_message(
     if message is None or not message.text or user is None:
         return
 
-    target = commands.button_target(message.text.strip())
+    text = message.text.strip()
+
+    # Fixed customer menu buttons.
+    if text == MENU_HOME:
+        await start(update, context)
+        return
+
+    if text == MENU_SHOP:
+        await shop(update, context)
+        return
+
+    if text == MENU_ORDERS:
+        await my_orders(update, context)
+        return
+
+    if text == MENU_PAYMENT:
+        await payment_methods(update, context)
+        return
+
+    if text == MENU_SUPPORT:
+        await customer_support(update, context)
+        return
+
+    if text == MENU_HELP:
+        await help_command(update, context)
+        return
+
+    if text == MENU_ABOUT:
+        await about(update, context)
+        return
+
+    if text == MENU_PING:
+        await ping(update, context)
+        return
+
+    # Preserve any additional buttons configured through the admin panel.
+    target = commands.button_target(text)
 
     if target is not None:
         if target == "help":
@@ -996,6 +1129,12 @@ async def echo_message(
             await start(update, context)
         elif target == "shop":
             await shop(update, context)
+        elif target == "orders":
+            await my_orders(update, context)
+        elif target == "payment":
+            await payment_methods(update, context)
+        elif target == "support":
+            await customer_support(update, context)
         else:
             command = commands.lookup(target)
 
@@ -1013,7 +1152,8 @@ async def echo_message(
     )
 
     await message.reply_text(
-        f"You sent (#{count}):\n{message.text}"
+        f"You sent (#{count}):\n{message.text}",
+        reply_markup=_main_menu_keyboard(),
     )
 
 
@@ -1023,7 +1163,6 @@ def _parse_command_name(text: str) -> str:
     token = text.strip().split(maxsplit=1)[0]
     token = token.lstrip("/")
     token = token.split("@", 1)[0]
-
     return token.lower()
 
 
@@ -1101,25 +1240,62 @@ async def error_handler(
 # --- Telegram command menu ---------------------------------------------------
 
 async def set_bot_commands(application: Application) -> None:
-    menu = list(BOT_COMMANDS) + commands.menu_commands()
-    await application.bot.set_my_commands(menu)
+    """Set customer commands globally and admin commands privately."""
+
+    customer_commands = [
+        BotCommand(name, description)
+        for name, description in BOT_COMMANDS
+    ]
+
+    # Keep panel-managed commands available to customers as well.
+    for name, description in commands.menu_commands():
+        if name not in {item.command for item in customer_commands}:
+            customer_commands.append(BotCommand(name, description or name))
+
+    await application.bot.set_my_commands(customer_commands)
+
+    admin_commands = customer_commands + [
+        BotCommand("addproduct", "Add a product"),
+        BotCommand("products", "View all products"),
+        BotCommand("editproduct", "Edit a product"),
+        BotCommand("deleteproduct", "Deactivate a product"),
+        BotCommand("cancel", "Cancel an admin operation"),
+    ]
+
+    admin_ids = {
+        value.strip()
+        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+        if value.strip()
+    }
+
+    for admin_id in admin_ids:
+        try:
+            await application.bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(chat_id=int(admin_id)),
+            )
+        except (ValueError, TypeError):
+            logger.warning("Invalid admin Telegram ID in configuration")
 
 
 # --- Register handlers -------------------------------------------------------
 
 def register_handlers(application: Application) -> None:
-    # Customer commands
+    # Customer commands.
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("shop", shop))
+    application.add_handler(CommandHandler("orders", my_orders))
+    application.add_handler(CommandHandler("payment", payment_methods))
+    application.add_handler(CommandHandler("support", customer_support))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
     application.add_handler(CommandHandler("ping", ping))
 
-    # Admin commands
+    # Admin commands.
     application.add_handler(CommandHandler("products", admin_products))
     application.add_handler(CommandHandler("deleteproduct", delete_product))
 
-    # Add product conversation
+    # Add product conversation.
     add_product_conversation = ConversationHandler(
         entry_points=[
             CommandHandler("addproduct", add_product_start),
@@ -1158,7 +1334,7 @@ def register_handlers(application: Application) -> None:
 
     application.add_handler(add_product_conversation)
 
-    # Edit product conversation
+    # Edit product conversation.
     edit_product_conversation = ConversationHandler(
         entry_points=[
             CommandHandler("editproduct", edit_product_start),
@@ -1203,7 +1379,7 @@ def register_handlers(application: Application) -> None:
 
     application.add_handler(edit_product_conversation)
 
-    # Product catalogue buttons
+    # Product catalogue buttons.
     application.add_handler(
         CallbackQueryHandler(
             product_back,
@@ -1218,7 +1394,7 @@ def register_handlers(application: Application) -> None:
         )
     )
 
-    # Panel-managed commands
+    # Panel-managed command buttons.
     application.add_handler(
         CallbackQueryHandler(
             dynamic_command_button,
@@ -1226,6 +1402,7 @@ def register_handlers(application: Application) -> None:
         )
     )
 
+    # Other slash commands configured through the admin panel.
     application.add_handler(
         MessageHandler(
             filters.COMMAND,
@@ -1233,15 +1410,7 @@ def register_handlers(application: Application) -> None:
         )
     )
 
-    # Main menu buttons
-    application.add_handler(
-        MessageHandler(
-            filters.Regex(f"^({MENU_HELP}|{MENU_ABOUT}|{MENU_PING})$"),
-            menu_button,
-        )
-    )
-
-    # General text messages
+    # All customer reply-keyboard buttons and ordinary text.
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
