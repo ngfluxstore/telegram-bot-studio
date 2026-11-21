@@ -30,10 +30,8 @@ from bot import commands, db
 logger = logging.getLogger(__name__)
 
 DB_KEY = "db"
-
 _LOCAL_MESSAGE_COUNTS: dict[int, int] = {}
 
-# Customer commands shown in Telegram's Commands menu.
 BOT_COMMANDS = (
     ("start", "Open the main menu"),
     ("shop", "Browse store products"),
@@ -44,13 +42,11 @@ BOT_COMMANDS = (
     ("about", "About NGFLUX STORE"),
 )
 
-# Customer reply-keyboard buttons.
 MENU_SHOP = "🛍️ Shop Products"
 MENU_ORDERS = "📦 My Orders"
 MENU_PAYMENT = "💳 Payment Methods"
 MENU_HOME = "🏠 Main Menu"
 MENU_SUPPORT = "💬 Customer Support"
-
 MENU_HELP = "Help"
 MENU_ABOUT = "About"
 MENU_PING = "Ping"
@@ -68,10 +64,46 @@ HELP_TEXT = """NGFLUX STORE Commands:
 DYNAMIC_CALLBACK_PREFIX = "command:"
 PRODUCT_CALLBACK_PREFIX = "product:"
 
+CATEGORIES = [
+    "💳 Wallets & Virtual Cards",
+    "🎮 Gaming & Discord",
+    "🎵 Entertainment & Subscriptions",
+    "📧 Digital Accounts",
+    "📦 Other Products",
+]
+
+CATEGORY_VALUES = {
+    "wallets": "Wallets & Virtual Cards",
+    "wallets & virtual cards": "Wallets & Virtual Cards",
+    "wallets and virtual cards": "Wallets & Virtual Cards",
+    "gaming": "Gaming & Discord",
+    "gaming & discord": "Gaming & Discord",
+    "discord": "Gaming & Discord",
+    "entertainment": "Entertainment & Subscriptions",
+    "entertainment & subscriptions": "Entertainment & Subscriptions",
+    "subscriptions": "Entertainment & Subscriptions",
+    "digital accounts": "Digital Accounts",
+    "accounts": "Digital Accounts",
+    "other": "Other Products",
+    "other products": "Other Products",
+}
+
+CATEGORY_CALLBACKS = {
+    "wallets": "Wallets & Virtual Cards",
+    "gaming": "Gaming & Discord",
+    "entertainment": "Entertainment & Subscriptions",
+    "accounts": "Digital Accounts",
+    "other": "Other Products",
+}
+
 (
     ADD_NAME,
     ADD_DESCRIPTION,
     ADD_CATEGORY,
+    ADD_COUNTRY,
+    ADD_FEATURES,
+    ADD_COMPATIBILITY,
+    ADD_LIMITS,
     ADD_PRICE,
     ADD_CURRENCY,
     EDIT_NAME,
@@ -80,14 +112,15 @@ PRODUCT_CALLBACK_PREFIX = "product:"
     EDIT_PRICE,
     EDIT_CURRENCY,
     EDIT_ACTIVE,
-) = range(11)
+) = range(15)
 
 
-# --- General helpers ---------------------------------------------------------
+# ---------------------------------------------------------------------------
+# General helpers
+# ---------------------------------------------------------------------------
 
 def _is_admin(update: Update) -> bool:
     user = update.effective_user
-
     if user is None:
         return False
 
@@ -96,7 +129,6 @@ def _is_admin(update: Update) -> bool:
         for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
         if value.strip()
     }
-
     return str(user.id) in admin_ids
 
 
@@ -105,26 +137,24 @@ async def _require_admin(update: Update) -> bool:
         return True
 
     message = update.effective_message
-
     if message is not None:
         await message.reply_text(
             "⛔ You are not authorized to use this admin command."
         )
-
     return False
 
 
+def _get_pool(context: ContextTypes.DEFAULT_TYPE):
+    return context.bot_data.get(DB_KEY)
+
+
 def _main_menu_keyboard() -> ReplyKeyboardMarkup:
-    """Display one clean, consistent customer menu."""
-
-    rows = [
-        [MENU_SHOP, MENU_ORDERS],
-        [MENU_PAYMENT, MENU_SUPPORT],
-        [MENU_HOME],
-    ]
-
     return ReplyKeyboardMarkup(
-        rows,
+        [
+            [MENU_SHOP, MENU_ORDERS],
+            [MENU_PAYMENT, MENU_SUPPORT],
+            [MENU_HOME],
+        ],
         resize_keyboard=True,
         is_persistent=True,
         input_field_placeholder="Choose an NGFLUX STORE option",
@@ -133,7 +163,6 @@ def _main_menu_keyboard() -> ReplyKeyboardMarkup:
 
 def _dynamic_commands_text() -> str:
     items = commands.menu_commands()
-
     if not items:
         return ""
 
@@ -141,9 +170,8 @@ def _dynamic_commands_text() -> str:
     return "\n\nAdditional commands:\n" + "\n".join(lines)
 
 
-def _dynamic_commands_keyboard() -> InlineKeyboardMarkup | None:
+def _dynamic_commands_keyboard():
     items = commands.menu_commands()
-
     if not items:
         return None
 
@@ -154,38 +182,142 @@ def _dynamic_commands_keyboard() -> InlineKeyboardMarkup | None:
         )
         for name, description in items
     ]
-
-    rows = [buttons[index:index + 2] for index in range(0, len(buttons), 2)]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     return InlineKeyboardMarkup(rows)
 
 
 def _format_price(product: dict) -> str:
-    return f"{product['currency']} {product['price']:,.2f}"
-
-
-def _get_pool(context: ContextTypes.DEFAULT_TYPE):
-    return context.bot_data.get(DB_KEY)
+    return (
+        f"{product.get('currency', 'USD')} "
+        f"{Decimal(str(product.get('price', 0))):,.2f}"
+    )
 
 
 def _parse_price(value: str) -> Decimal | None:
     try:
         price = Decimal(value.strip())
-
         if not price.is_finite() or price < 0:
             return None
-
         return price
-
     except (InvalidOperation, ValueError):
         return None
 
 
-# --- Start and main menu -----------------------------------------------------
+def _canonical_category(value: str) -> str | None:
+    return CATEGORY_VALUES.get(value.strip().lower())
 
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+
+def _category_keyboard() -> InlineKeyboardMarkup:
+    callbacks = ["wallets", "gaming", "entertainment", "accounts", "other"]
+    rows = [
+        [InlineKeyboardButton(CATEGORIES[i], callback_data=f"nav:cat:{callbacks[i]}")]
+        for i in range(len(CATEGORIES))
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+async def _ensure_wallet_catalog(pool) -> None:
+    """Seed the supplied wallet catalogue once; keep old seeded records organised."""
+    if not hasattr(db, "seed_wallet_catalog"):
+        return
+
+    await db.seed_wallet_catalog(pool)
+
+    # Older versions used the category name "Wallets".
+    await pool.execute(
+        """
+        UPDATE products
+        SET category = 'Wallets & Virtual Cards',
+            updated_at = NOW()
+        WHERE LOWER(category) = 'wallets'
+        """
+    )
+
+
+def _back_to_categories_button():
+    return InlineKeyboardButton(
+        "⬅️ Back to Categories",
+        callback_data="nav:categories",
+    )
+
+
+def _product_button(product: dict):
+    return InlineKeyboardButton(
+        f"{product['name']} — {_format_price(product)}",
+        callback_data=f"product:{product['id']}",
+    )
+
+
+def _product_list_keyboard(products: list[dict]) -> InlineKeyboardMarkup:
+    rows = [[_product_button(product)] for product in products]
+    rows.append([_back_to_categories_button()])
+    return InlineKeyboardMarkup(rows)
+
+
+def _country_keyboard(countries: list[str]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(f"🌍 {country}", callback_data=f"nav:country:{i}")]
+        for i, country in enumerate(countries)
+    ]
+    rows.append([_back_to_categories_button()])
+    return InlineKeyboardMarkup(rows)
+
+
+def _normalise_legacy_category(category: str) -> str:
+    """Map older product category names into the agreed store categories."""
+    value = (category or "").strip().lower()
+
+    if value in ("wallets", "wallet", "virtual cards", "cards"):
+        return "Wallets & Virtual Cards"
+
+    if value in ("discord", "gaming", "games"):
+        return "Gaming & Discord"
+
+    if value in ("subscriptions", "entertainment"):
+        return "Entertainment & Subscriptions"
+
+    if value in ("accounts", "digital account"):
+        return "Digital Accounts"
+
+    if value in ("other", "others"):
+        return "Other Products"
+
+    return category or "Other Products"
+
+
+def _format_pricing_options(product: dict) -> str:
+    options = product.get("pricing_options")
+    if not options:
+        return ""
+
+    if isinstance(options, str):
+        import json
+        try:
+            options = json.loads(options)
+        except (ValueError, TypeError):
+            return ""
+
+    if not isinstance(options, list):
+        return ""
+
+    lines = ["\n💰 Available price options:"]
+    for option in options:
+        if isinstance(option, dict):
+            label = option.get("name") or option.get("label") or option.get("tier")
+            price = option.get("price")
+            currency = option.get("currency") or product.get("currency", "USD")
+            if label and price is not None:
+                lines.append(f"• {label}: {currency} {price}")
+            elif price is not None:
+                lines.append(f"• {currency} {price}")
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+# ---------------------------------------------------------------------------
+# Start and main menu
+# ---------------------------------------------------------------------------
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
     user = update.effective_user
 
@@ -213,7 +345,7 @@ async def start(
     if _is_admin(update):
         await message.reply_text(
             "🔐 Admin access enabled.\n\n"
-            "Product management commands:\n"
+            "Product management:\n"
             "/addproduct - Add a product\n"
             "/products - View all products\n"
             "/editproduct ID - Edit a product\n"
@@ -222,13 +354,9 @@ async def start(
         )
 
 
-async def help_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     message = update.effective_message
-
     if message is not None:
         await message.reply_text(
             HELP_TEXT + _dynamic_commands_text(),
@@ -236,36 +364,30 @@ async def help_command(
         )
 
 
-async def about(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     message = update.effective_message
-
     if message is not None:
         await message.reply_text(
             "NGFLUX STORE\n"
             "Your Trusted Digital Marketplace.\n\n"
-            "We offer digital products, subscriptions, wallets "
-            "and virtual cards.\n\n"
+            "We offer digital wallets, virtual cards, gaming products, "
+            "subscriptions and digital accounts.\n\n"
             "Customer Support: @Ngfluxstore",
             reply_markup=_main_menu_keyboard(),
         )
 
 
-async def ping(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     del context
     message = update.effective_message
-
     if message is not None:
         await message.reply_text("pong")
 
 
-# --- Customer services -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Customer services
+# ---------------------------------------------------------------------------
 
 async def payment_methods(
     update: Update,
@@ -273,21 +395,18 @@ async def payment_methods(
 ) -> None:
     del context
     message = update.effective_message
-
     if message is None:
         return
 
     await message.reply_text(
         "💳 NGFLUX STORE PAYMENT METHODS\n\n"
-        "We currently support the following payment options:\n\n"
         "• Binance Pay\n"
         "• USDT\n"
         "• BNB\n"
         "• Litecoin (LTC)\n"
         "• Bybit Pay\n\n"
-        "📌 To receive the correct payment details for your order, "
-        "please contact our support team.\n\n"
-        "We verify payments manually before processing orders.\n\n"
+        "Contact support to receive the correct payment details for your order.\n\n"
+        "Payments are verified manually before orders are processed.\n"
         "Support: @Ngfluxstore",
         reply_markup=_main_menu_keyboard(),
     )
@@ -299,24 +418,20 @@ async def customer_support(
 ) -> None:
     del context
     message = update.effective_message
-
     if message is None:
         return
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "💬 Contact NGFLUX Support",
-                url="https://t.me/Ngfluxstore",
-            )
-        ]
-    ])
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(
+            "💬 Contact NGFLUX Support",
+            url="https://t.me/Ngfluxstore",
+        )
+    ]])
 
     await message.reply_text(
         "💬 NGFLUX STORE CUSTOMER SUPPORT\n\n"
         "Need help with an order, payment, product or service?\n\n"
-        "Our support team is available to assist you.\n\n"
-        "Tap the button below to contact us.",
+        "Tap below to contact our support team.",
         reply_markup=keyboard,
     )
 
@@ -332,12 +447,8 @@ async def my_orders(
         return
 
     pool = _get_pool(context)
-
     if pool is None:
-        await message.reply_text(
-            "Your order history is temporarily unavailable. "
-            "Please try again later."
-        )
+        await message.reply_text("Your order history is temporarily unavailable.")
         return
 
     try:
@@ -352,38 +463,31 @@ async def my_orders(
             """,
             user.id,
         )
-
     except Exception:
         logger.exception("Could not retrieve customer orders")
         await message.reply_text(
-            "I couldn't retrieve your orders right now. "
-            "Please contact @Ngfluxstore for assistance."
+            "I couldn't retrieve your orders. Contact @Ngfluxstore."
         )
         return
 
     if not orders:
         await message.reply_text(
             "📦 YOUR ORDERS\n\n"
-            "You don't have any orders yet.\n\n"
+            "You don't have any orders yet.\n"
             "Visit Shop Products to explore what's available.",
             reply_markup=_main_menu_keyboard(),
         )
         return
 
     lines = ["📦 YOUR RECENT ORDERS\n"]
-
     for order in orders:
-        order_number = order["order_number"]
-        created_at = order["created_at"]
-
         lines.append(
-            f"\nOrder: {order_number}\n"
+            f"\nOrder: {order['order_number']}\n"
             f"Product: {order['product_name']}\n"
             f"Quantity: {order['quantity']}\n"
-            f"Total: {order['currency']} "
-            f"{order['total_amount']:,.2f}\n"
+            f"Total: {order['currency']} {order['total_amount']:,.2f}\n"
             f"Status: {order['status']}\n"
-            f"Date: {created_at}"
+            f"Date: {order['created_at']}"
         )
 
     await message.reply_text(
@@ -392,53 +496,205 @@ async def my_orders(
     )
 
 
-# --- Customer product catalogue ---------------------------------------------
+# ---------------------------------------------------------------------------
+# Customer catalogue navigation
+# ---------------------------------------------------------------------------
 
-async def shop(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
+async def shop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
-
     if message is None:
         return
 
     pool = _get_pool(context)
-
     if pool is None:
-        await message.reply_text(
-            "Our product catalogue is temporarily unavailable. "
-            "Please try again later."
-        )
+        await message.reply_text("Our product catalogue is temporarily unavailable.")
         return
 
-    products = await db.list_products(pool, active_only=True)
+    try:
+        await _ensure_wallet_catalog(pool)
+    except Exception:
+        logger.exception("Wallet catalogue initialisation failed")
 
-    if not products:
-        await message.reply_text(
-            "🛍️ NGFLUX STORE PRODUCT CATALOGUE\n\n"
-            "There are currently no products available.\n"
-            "Please check back soon!\n\n"
-            "For assistance, contact @Ngfluxstore.",
-            reply_markup=_main_menu_keyboard(),
-        )
-        return
-
-    buttons = [
-        [
-            InlineKeyboardButton(
-                f"{product['name']} - {_format_price(product)}",
-                callback_data=f"{PRODUCT_CALLBACK_PREFIX}{product['id']}",
-            )
-        ]
-        for product in products
-    ]
+    context.user_data.pop("shop_country", None)
+    context.user_data.pop("shop_category", None)
 
     await message.reply_text(
-        "🛍️ NGFLUX STORE PRODUCT CATALOGUE\n\n"
-        "Welcome to our store!\n"
-        "Select a product below to view its details.",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        "🛍️ NGFLUX STORE\n\n"
+        "Choose a category to explore our products:",
+        reply_markup=_category_keyboard(),
+    )
+
+
+async def show_categories(
+    query,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    context.user_data.pop("shop_country", None)
+    context.user_data.pop("shop_category", None)
+
+    await query.edit_message_text(
+        "🛍️ NGFLUX STORE\n\nChoose a product category:",
+        reply_markup=_category_keyboard(),
+    )
+
+
+async def category_navigation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+
+    await query.answer()
+    pool = _get_pool(context)
+    if pool is None:
+        await query.edit_message_text("The catalogue is temporarily unavailable.")
+        return
+
+    if query.data == "nav:categories":
+        await show_categories(query, context)
+        return
+
+    slug = query.data.removeprefix("nav:cat:")
+    category = CATEGORY_CALLBACKS.get(slug)
+    if category is None:
+        return
+
+    context.user_data["shop_category"] = category
+    context.user_data.pop("shop_country", None)
+
+    if category == "Wallets & Virtual Cards":
+        try:
+            await _ensure_wallet_catalog(pool)
+            countries = await db.list_product_countries(pool)
+            countries = sorted({
+                str(country).strip()
+                for country in countries
+                if country and str(country).strip()
+            })
+        except Exception:
+            logger.exception("Could not retrieve wallet countries")
+            await query.edit_message_text(
+                "I couldn't load wallet countries right now. Please try again."
+            )
+            return
+
+        context.user_data["shop_countries"] = countries
+
+        if not countries:
+            await query.edit_message_text(
+                "🌍 No wallet countries are currently available.",
+                reply_markup=InlineKeyboardMarkup([[
+                    _back_to_categories_button()
+                ]]),
+            )
+            return
+
+        await query.edit_message_text(
+            "💳 WALLETS & VIRTUAL CARDS\n\n"
+            "Choose a country to view its available wallets:",
+            reply_markup=_country_keyboard(countries),
+        )
+        return
+
+    products = await db.list_products(
+        pool,
+        active_only=True,
+        category=category,
+    )
+
+    # Include products created under older category labels.
+    if not products:
+        legacy_categories = {
+            "Gaming & Discord": ["Discord", "Gaming"],
+            "Entertainment & Subscriptions": ["Subscriptions", "Entertainment"],
+            "Digital Accounts": ["Accounts"],
+            "Other Products": ["Other", "Others"],
+        }
+        for old_category in legacy_categories.get(category, []):
+            products.extend(
+                await db.list_products(
+                    pool,
+                    active_only=True,
+                    category=old_category,
+                )
+            )
+
+    if not products:
+        await query.edit_message_text(
+            f"{category}\n\n"
+            "There are currently no products in this category.\n"
+            "Please check back soon.",
+            reply_markup=InlineKeyboardMarkup([[
+                _back_to_categories_button()
+            ]]),
+        )
+        return
+
+    await query.edit_message_text(
+        f"{category}\n\nSelect a product to view its details:",
+        reply_markup=_product_list_keyboard(products),
+    )
+
+
+async def country_navigation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+
+    await query.answer()
+    pool = _get_pool(context)
+    if pool is None:
+        await query.edit_message_text("The catalogue is temporarily unavailable.")
+        return
+
+    try:
+        index = int(query.data.removeprefix("nav:country:"))
+        countries = context.user_data.get("shop_countries", [])
+        country = countries[index]
+    except (ValueError, IndexError, TypeError):
+        await query.edit_message_text(
+            "That country selection has expired. Please open the shop again."
+        )
+        return
+
+    context.user_data["shop_country"] = country
+
+    products = await db.list_products(
+        pool,
+        active_only=True,
+        category="Wallets & Virtual Cards",
+        country=country,
+    )
+
+    if not products:
+        await query.edit_message_text(
+            f"🌍 {country} Wallets\n\n"
+            "No wallets are currently available for this country.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "⬅️ Back to Countries",
+                    callback_data="nav:cat:wallets",
+                )],
+                [_back_to_categories_button()],
+            ]),
+        )
+        return
+
+    rows = [[_product_button(product)] for product in products]
+    rows.append([InlineKeyboardButton(
+        "⬅️ Back to Countries",
+        callback_data="nav:cat:wallets",
+    )])
+
+    await query.edit_message_text(
+        f"🌍 {country.upper()} WALLETS\n\n"
+        "Select a wallet to view its features and price:",
+        reply_markup=InlineKeyboardMarkup(rows),
     )
 
 
@@ -447,103 +703,104 @@ async def product_details(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
     query = update.callback_query
-
     if query is None or query.data is None:
         return
 
     await query.answer()
     pool = _get_pool(context)
-
     if pool is None:
-        if query.message is not None:
-            await query.message.reply_text(
-                "The product catalogue is temporarily unavailable."
-            )
+        await query.edit_message_text("The catalogue is temporarily unavailable.")
         return
 
     try:
-        product_id = int(
-            query.data.removeprefix(PRODUCT_CALLBACK_PREFIX)
-        )
+        product_id = int(query.data.removeprefix(PRODUCT_CALLBACK_PREFIX))
     except ValueError:
         return
 
     product = await db.get_product(pool, product_id)
-
-    if product is None or not product["active"]:
-        await query.edit_message_text(
-            "Sorry, this product is no longer available."
-        )
+    if product is None or not product.get("active"):
+        await query.edit_message_text("Sorry, this product is no longer available.")
         return
 
-    description = product["description"] or "No description available."
+    category = _normalise_legacy_category(product.get("category", ""))
+    country = product.get("country") or ""
+    description = product.get("description") or "No description available."
+    features = product.get("features") or ""
+    compatibility = product.get("compatibility") or ""
+    limits = product.get("limits") or ""
 
-    text = (
-        f"🛍️ {product['name']}\n\n"
-        f"📂 Category: {product['category']}\n"
-        f"📝 Description: {description}\n\n"
-        f"💰 Price: {_format_price(product)}\n\n"
-        "To place an order or ask a question, contact "
-        "@Ngfluxstore.\n\n"
-        "Thank you for choosing NGFLUX STORE!"
-    )
-
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "⬅️ Back to Products",
-                callback_data="product:back",
-            )
-        ]
-    ])
-
-    await query.edit_message_text(text, reply_markup=keyboard)
-
-
-async def product_back(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    query = update.callback_query
-
-    if query is None:
-        return
-
-    await query.answer()
-    pool = _get_pool(context)
-
-    if pool is None:
-        await query.edit_message_text(
-            "The product catalogue is temporarily unavailable."
-        )
-        return
-
-    products = await db.list_products(pool, active_only=True)
-
-    if not products:
-        await query.edit_message_text(
-            "There are currently no products available."
-        )
-        return
-
-    buttons = [
-        [
-            InlineKeyboardButton(
-                f"{product['name']} - {_format_price(product)}",
-                callback_data=f"{PRODUCT_CALLBACK_PREFIX}{product['id']}",
-            )
-        ]
-        for product in products
+    parts = [
+        f"🛍️ {product['name']}",
+        "",
+        f"📂 Category: {category}",
     ]
 
+    if country:
+        parts.append(f"🌍 Country: {country}")
+
+    parts.extend(["", f"📝 Description: {description}"])
+
+    if features:
+        parts.extend(["", f"⭐ Features:\n{features}"])
+
+    if compatibility:
+        parts.extend(["", f"📱 Compatibility: {compatibility}"])
+
+    if limits:
+        parts.extend(["", f"📊 Limits: {limits}"])
+
+    parts.extend([
+        "",
+        f"💰 Price: {_format_price(product)}",
+    ])
+
+    options_text = _format_pricing_options(product)
+    if options_text:
+        parts.append(options_text)
+
+    parts.extend([
+        "",
+        "To purchase this product, contact our support team.",
+        "Payments are verified manually before processing.",
+    ])
+
+    if category == "Wallets & Virtual Cards" and country:
+        back_callback = "nav:cat:wallets"
+        back_label = "⬅️ Back to Country Wallets"
+    elif category == "Wallets & Virtual Cards":
+        back_callback = "nav:cat:wallets"
+        back_label = "⬅️ Back to Countries"
+    else:
+        slug = {
+            "Gaming & Discord": "gaming",
+            "Entertainment & Subscriptions": "entertainment",
+            "Digital Accounts": "accounts",
+            "Other Products": "other",
+        }.get(category, "other")
+        back_callback = f"nav:cat:{slug}"
+        back_label = "⬅️ Back to Products"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "💬 Contact Support to Purchase",
+            url="https://t.me/Ngfluxstore",
+        )],
+        [InlineKeyboardButton(
+            back_label,
+            callback_data=back_callback,
+        )],
+        [_back_to_categories_button()],
+    ])
+
     await query.edit_message_text(
-        "🛍️ NGFLUX STORE PRODUCT CATALOGUE\n\n"
-        "Select a product to view its details.",
-        reply_markup=InlineKeyboardMarkup(buttons),
+        "\n".join(parts),
+        reply_markup=keyboard,
     )
 
 
-# --- Admin: list products ----------------------------------------------------
+# ---------------------------------------------------------------------------
+# Admin: list products
+# ---------------------------------------------------------------------------
 
 async def admin_products(
     update: Update,
@@ -554,47 +811,40 @@ async def admin_products(
 
     message = update.effective_message
     pool = _get_pool(context)
-
     if message is None:
         return
-
     if pool is None:
         await message.reply_text("Database is unavailable.")
         return
 
     products = await db.list_products(pool, active_only=False)
-
     if not products:
         await message.reply_text(
-            "📦 No products have been added yet.\n\n"
-            "Use /addproduct to create your first product."
+            "📦 No products have been added yet.\nUse /addproduct to add one."
         )
         return
 
     lines = ["📦 NGFLUX STORE — PRODUCT MANAGEMENT\n"]
-
     for product in products[:40]:
         status = "🟢 Active" if product["active"] else "🔴 Inactive"
-
         lines.append(
             f"\nID: {product['id']}\n"
             f"Name: {product['name']}\n"
-            f"Category: {product['category']}\n"
+            f"Category: {_normalise_legacy_category(product['category'])}\n"
+            f"Country: {product.get('country') or '—'}\n"
             f"Price: {_format_price(product)}\n"
             f"Status: {status}"
         )
 
     lines.append(
-        "\n\nCommands:\n"
-        "/addproduct\n"
-        "/editproduct ID\n"
-        "/deleteproduct ID"
+        "\n\n/addproduct\n/editproduct ID\n/deleteproduct ID"
     )
-
     await message.reply_text("\n".join(lines))
 
 
-# --- Admin: add product conversation ---------------------------------------
+# ---------------------------------------------------------------------------
+# Admin: add product
+# ---------------------------------------------------------------------------
 
 async def add_product_start(
     update: Update,
@@ -604,46 +854,31 @@ async def add_product_start(
         return ConversationHandler.END
 
     message = update.effective_message
-
     if message is None:
         return ConversationHandler.END
-
     if _get_pool(context) is None:
         await message.reply_text("Database is unavailable.")
         return ConversationHandler.END
 
     context.user_data["new_product"] = {}
-
-    await message.reply_text(
-        "➕ ADD NEW PRODUCT\n\n"
-        "Step 1 of 5: Enter the product name."
-    )
-
+    await message.reply_text("➕ ADD PRODUCT\n\nStep 1: Enter the product name.")
     return ADD_NAME
 
 
-async def add_name(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def add_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return ADD_NAME
 
     name = message.text.strip()
-
     if not name or len(name) > 150:
-        await message.reply_text("Please enter a valid product name.")
+        await message.reply_text("Enter a valid product name.")
         return ADD_NAME
 
     context.user_data["new_product"]["name"] = name
-
     await message.reply_text(
-        "Step 2 of 5: Enter the product description.\n"
-        "Send - if you don't want a description."
+        "Step 2: Enter the product description.\nSend - for no description."
     )
-
     return ADD_DESCRIPTION
 
 
@@ -652,22 +887,19 @@ async def add_description(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return ADD_DESCRIPTION
 
     description = message.text.strip()
-
-    if description == "-":
-        description = ""
-
-    context.user_data["new_product"]["description"] = description
-
-    await message.reply_text(
-        "Step 3 of 5: Enter the product category.\n\n"
-        "Examples: Wallets, Virtual Cards, Subscriptions, Discord."
+    context.user_data["new_product"]["description"] = (
+        "" if description == "-" else description
     )
 
+    category_list = "\n".join(f"• {item}" for item in CATEGORIES)
+    await message.reply_text(
+        "Step 3: Enter ONE of these exact categories:\n\n"
+        f"{category_list}"
+    )
     return ADD_CATEGORY
 
 
@@ -676,23 +908,99 @@ async def add_category(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return ADD_CATEGORY
 
-    category = message.text.strip()
-
-    if not category or len(category) > 80:
-        await message.reply_text("Please enter a valid category.")
+    category = _canonical_category(message.text)
+    if category is None:
+        await message.reply_text(
+            "Please use one of the five official category names shown above."
+        )
         return ADD_CATEGORY
 
     context.user_data["new_product"]["category"] = category
 
-    await message.reply_text(
-        "Step 4 of 5: Enter the product price.\n"
-        "Example: 60 or 3.50"
-    )
+    if category == "Wallets & Virtual Cards":
+        await message.reply_text(
+            "Step 4: Enter the wallet's country.\n"
+            "Example: Nigeria, Turkey, India, Pakistan, Ukraine or Indonesia."
+        )
+        return ADD_COUNTRY
 
+    context.user_data["new_product"]["country"] = ""
+    await message.reply_text(
+        "Step 4: Enter product features, one per line.\nSend - if none."
+    )
+    return ADD_FEATURES
+
+
+async def add_country(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    if message is None or not message.text:
+        return ADD_COUNTRY
+
+    country = message.text.strip()
+    if not country or len(country) > 60:
+        await message.reply_text("Please enter a valid country name.")
+        return ADD_COUNTRY
+
+    context.user_data["new_product"]["country"] = country
+    await message.reply_text(
+        "Step 5: Enter wallet features, one per line.\nSend - if none."
+    )
+    return ADD_FEATURES
+
+
+async def add_features(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    if message is None or not message.text:
+        return ADD_FEATURES
+
+    value = message.text.strip()
+    context.user_data["new_product"]["features"] = "" if value == "-" else value
+    await message.reply_text(
+        "Next: Enter device/app compatibility.\n"
+        "Example: Android & iOS. Send - if not applicable."
+    )
+    return ADD_COMPATIBILITY
+
+
+async def add_compatibility(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    if message is None or not message.text:
+        return ADD_COMPATIBILITY
+
+    value = message.text.strip()
+    context.user_data["new_product"]["compatibility"] = (
+        "" if value == "-" else value
+    )
+    await message.reply_text(
+        "Next: Enter account limits or other important details.\n"
+        "Send - if none."
+    )
+    return ADD_LIMITS
+
+
+async def add_limits(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    if message is None or not message.text:
+        return ADD_LIMITS
+
+    value = message.text.strip()
+    context.user_data["new_product"]["limits"] = "" if value == "-" else value
+    await message.reply_text("Next: Enter the product price, for example 60 or 3.50.")
     return ADD_PRICE
 
 
@@ -701,25 +1009,16 @@ async def add_price(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return ADD_PRICE
 
     price = _parse_price(message.text)
-
     if price is None:
-        await message.reply_text(
-            "Invalid price. Enter a valid amount, for example 60 or 3.50."
-        )
+        await message.reply_text("Invalid price. Enter an amount such as 60 or 3.50.")
         return ADD_PRICE
 
     context.user_data["new_product"]["price"] = price
-
-    await message.reply_text(
-        "Step 5 of 5: Enter the currency code.\n"
-        "For example: USD"
-    )
-
+    await message.reply_text("Final step: Enter the currency code, for example USD.")
     return ADD_CURRENCY
 
 
@@ -728,16 +1027,12 @@ async def add_currency(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return ADD_CURRENCY
 
     currency = message.text.strip().upper()
-
     if len(currency) != 3 or not currency.isalpha():
-        await message.reply_text(
-            "Please enter a valid three-letter currency code, such as USD."
-        )
+        await message.reply_text("Enter a valid three-letter currency code, such as USD.")
         return ADD_CURRENCY
 
     data = context.user_data.get("new_product", {})
@@ -753,10 +1048,14 @@ async def add_currency(
         product = await db.create_product(
             pool,
             name=data["name"],
-            description=data["description"],
+            description=data.get("description", ""),
             category=data["category"],
             price=data["price"],
             currency=data["currency"],
+            country=data.get("country", ""),
+            features=data.get("features", ""),
+            compatibility=data.get("compatibility", ""),
+            limits=data.get("limits", ""),
         )
 
         await message.reply_text(
@@ -764,21 +1063,21 @@ async def add_currency(
             f"Product ID: {product['id']}\n"
             f"Name: {product['name']}\n"
             f"Category: {product['category']}\n"
+            f"Country: {product.get('country') or '—'}\n"
             f"Price: {_format_price(product)}\n\n"
-            "Customers can now find it using /shop."
+            "The product will appear in its matching store category."
         )
-
     except Exception:
         logger.exception("Failed to create product")
-        await message.reply_text(
-            "❌ I couldn't save this product. Please try again."
-        )
+        await message.reply_text("❌ I couldn't save this product. Please try again.")
 
     context.user_data.pop("new_product", None)
     return ConversationHandler.END
 
 
-# --- Admin: edit product conversation --------------------------------------
+# ---------------------------------------------------------------------------
+# Admin: edit product
+# ---------------------------------------------------------------------------
 
 async def edit_product_start(
     update: Update,
@@ -788,14 +1087,11 @@ async def edit_product_start(
         return ConversationHandler.END
 
     message = update.effective_message
-
     if message is None:
         return ConversationHandler.END
 
     if not context.args:
-        await message.reply_text(
-            "Usage: /editproduct ID\nExample: /editproduct 1"
-        )
+        await message.reply_text("Usage: /editproduct ID\nExample: /editproduct 1")
         return ConversationHandler.END
 
     try:
@@ -805,49 +1101,45 @@ async def edit_product_start(
         return ConversationHandler.END
 
     pool = _get_pool(context)
-
     if pool is None:
         await message.reply_text("Database is unavailable.")
         return ConversationHandler.END
 
     product = await db.get_product(pool, product_id)
-
     if product is None:
         await message.reply_text("Product not found.")
         return ConversationHandler.END
 
-    context.user_data["edit_product"] = {"id": product_id}
+    # Keep all existing wallet metadata when editing ordinary product fields.
+    context.user_data["edit_product"] = {
+        "id": product_id,
+        "country": product.get("country") or "",
+        "features": product.get("features") or "",
+        "compatibility": product.get("compatibility") or "",
+        "limits": product.get("limits") or "",
+        "pricing_options": product.get("pricing_options"),
+    }
 
     await message.reply_text(
         f"✏️ EDIT PRODUCT #{product_id}\n\n"
-        f"Current name: {product['name']}\n\n"
+        f"Current name: {product['name']}\n"
         "Step 1 of 6: Enter the new product name."
     )
-
     return EDIT_NAME
 
 
-async def edit_name(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def edit_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return EDIT_NAME
 
-    name = message.text.strip()
-
-    if not name or len(name) > 150:
-        await message.reply_text("Please enter a valid product name.")
+    value = message.text.strip()
+    if not value or len(value) > 150:
+        await message.reply_text("Enter a valid product name.")
         return EDIT_NAME
 
-    context.user_data["edit_product"]["name"] = name
-    await message.reply_text(
-        "Step 2 of 6: Enter the new description.\n"
-        "Send - for an empty description."
-    )
-
+    context.user_data["edit_product"]["name"] = value
+    await message.reply_text("Step 2 of 6: Enter the new description. Send - for empty.")
     return EDIT_DESCRIPTION
 
 
@@ -856,18 +1148,16 @@ async def edit_description(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return EDIT_DESCRIPTION
 
-    description = message.text.strip()
+    value = message.text.strip()
+    context.user_data["edit_product"]["description"] = "" if value == "-" else value
 
-    if description == "-":
-        description = ""
-
-    context.user_data["edit_product"]["description"] = description
-    await message.reply_text("Step 3 of 6: Enter the new category.")
-
+    await message.reply_text(
+        "Step 3 of 6: Enter one official category:\n\n"
+        + "\n".join(f"• {item}" for item in CATEGORIES)
+    )
     return EDIT_CATEGORY
 
 
@@ -876,42 +1166,36 @@ async def edit_category(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return EDIT_CATEGORY
 
-    category = message.text.strip()
-
-    if not category or len(category) > 80:
-        await message.reply_text("Please enter a valid category.")
+    category = _canonical_category(message.text)
+    if category is None:
+        await message.reply_text("Please enter one of the five official categories.")
         return EDIT_CATEGORY
 
-    context.user_data["edit_product"]["category"] = category
-    await message.reply_text("Step 4 of 6: Enter the new price.")
+    data = context.user_data["edit_product"]
+    data["category"] = category
 
+    if category != "Wallets & Virtual Cards":
+        data["country"] = ""
+
+    await message.reply_text("Step 4 of 6: Enter the new price.")
     return EDIT_PRICE
 
 
-async def edit_price(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-) -> int:
+async def edit_price(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return EDIT_PRICE
 
     price = _parse_price(message.text)
-
     if price is None:
         await message.reply_text("Enter a valid price, such as 60 or 3.50.")
         return EDIT_PRICE
 
     context.user_data["edit_product"]["price"] = price
-    await message.reply_text(
-        "Step 5 of 6: Enter the currency code, for example USD."
-    )
-
+    await message.reply_text("Step 5 of 6: Enter the currency code, for example USD.")
     return EDIT_CURRENCY
 
 
@@ -920,25 +1204,18 @@ async def edit_currency(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return EDIT_CURRENCY
 
     currency = message.text.strip().upper()
-
     if len(currency) != 3 or not currency.isalpha():
-        await message.reply_text(
-            "Enter a valid three-letter currency code, such as USD."
-        )
+        await message.reply_text("Enter a valid three-letter currency code.")
         return EDIT_CURRENCY
 
     context.user_data["edit_product"]["currency"] = currency
-
     await message.reply_text(
-        "Step 6 of 6: Should this product be active in the shop?\n"
-        "Reply YES or NO."
+        "Step 6 of 6: Should this product be active in the shop?\nReply YES or NO."
     )
-
     return EDIT_ACTIVE
 
 
@@ -947,19 +1224,16 @@ async def edit_active(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     if message is None or not message.text:
         return EDIT_ACTIVE
 
     answer = message.text.strip().lower()
-
     if answer not in ("yes", "no"):
         await message.reply_text("Please reply YES or NO.")
         return EDIT_ACTIVE
 
     data = context.user_data.get("edit_product", {})
     pool = _get_pool(context)
-
     if pool is None:
         await message.reply_text("Database is unavailable.")
         context.user_data.pop("edit_product", None)
@@ -975,33 +1249,33 @@ async def edit_active(
             price=data["price"],
             currency=data["currency"],
             active=(answer == "yes"),
+            country=data.get("country", ""),
+            features=data.get("features", ""),
+            compatibility=data.get("compatibility", ""),
+            limits=data.get("limits", ""),
+            pricing_options=data.get("pricing_options"),
         )
 
         if product is None:
             await message.reply_text("Product not found.")
         else:
             status = "Active" if product["active"] else "Inactive"
-
             await message.reply_text(
                 "✅ PRODUCT UPDATED!\n\n"
                 f"Product ID: {product['id']}\n"
                 f"Name: {product['name']}\n"
                 f"Category: {product['category']}\n"
+                f"Country: {product.get('country') or '—'}\n"
                 f"Price: {_format_price(product)}\n"
                 f"Status: {status}"
             )
-
     except Exception:
         logger.exception("Failed to update product")
-        await message.reply_text(
-            "❌ I couldn't update this product. Please try again."
-        )
+        await message.reply_text("❌ I couldn't update this product. Please try again.")
 
     context.user_data.pop("edit_product", None)
     return ConversationHandler.END
 
-
-# --- Admin: deactivate product ----------------------------------------------
 
 async def delete_product(
     update: Update,
@@ -1011,14 +1285,11 @@ async def delete_product(
         return
 
     message = update.effective_message
-
     if message is None:
         return
 
     if not context.args:
-        await message.reply_text(
-            "Usage: /deleteproduct ID\nExample: /deleteproduct 1"
-        )
+        await message.reply_text("Usage: /deleteproduct ID")
         return
 
     try:
@@ -1028,29 +1299,21 @@ async def delete_product(
         return
 
     pool = _get_pool(context)
-
     if pool is None:
         await message.reply_text("Database is unavailable.")
         return
 
     try:
         success = await db.deactivate_product(pool, product_id)
-
         if success:
             await message.reply_text(
-                f"✅ Product #{product_id} has been deactivated.\n"
-                "It will no longer appear in the customer catalogue."
+                f"✅ Product #{product_id} has been deactivated."
             )
         else:
-            await message.reply_text(
-                "Product not found or already inactive."
-            )
-
+            await message.reply_text("Product not found or already inactive.")
     except Exception:
         logger.exception("Failed to deactivate product")
-        await message.reply_text(
-            "❌ I couldn't deactivate this product. Please try again."
-        )
+        await message.reply_text("❌ I couldn't deactivate this product.")
 
 
 async def cancel_admin_action(
@@ -1058,17 +1321,17 @@ async def cancel_admin_action(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     message = update.effective_message
-
     context.user_data.pop("new_product", None)
     context.user_data.pop("edit_product", None)
 
     if message is not None:
         await message.reply_text("Admin operation cancelled.")
-
     return ConversationHandler.END
 
 
-# --- Text and menu handling --------------------------------------------------
+# ---------------------------------------------------------------------------
+# Text and menu handling
+# ---------------------------------------------------------------------------
 
 async def echo_message(
     update: Update,
@@ -1076,88 +1339,66 @@ async def echo_message(
 ) -> None:
     message = update.effective_message
     user = update.effective_user
-
     if message is None or not message.text or user is None:
         return
 
     text = message.text.strip()
 
-    # Fixed customer menu buttons.
     if text == MENU_HOME:
         await start(update, context)
-        return
-
-    if text == MENU_SHOP:
+    elif text == MENU_SHOP:
         await shop(update, context)
-        return
-
-    if text == MENU_ORDERS:
+    elif text == MENU_ORDERS:
         await my_orders(update, context)
-        return
-
-    if text == MENU_PAYMENT:
+    elif text == MENU_PAYMENT:
         await payment_methods(update, context)
-        return
-
-    if text == MENU_SUPPORT:
+    elif text == MENU_SUPPORT:
         await customer_support(update, context)
-        return
-
-    if text == MENU_HELP:
+    elif text == MENU_HELP:
         await help_command(update, context)
-        return
-
-    if text == MENU_ABOUT:
+    elif text == MENU_ABOUT:
         await about(update, context)
-        return
-
-    if text == MENU_PING:
+    elif text == MENU_PING:
         await ping(update, context)
-        return
+    else:
+        target = commands.button_target(text)
 
-    # Preserve any additional buttons configured through the admin panel.
-    target = commands.button_target(text)
+        if target is not None:
+            handlers = {
+                "help": help_command,
+                "about": about,
+                "ping": ping,
+                "start": start,
+                "shop": shop,
+                "orders": my_orders,
+                "payment": payment_methods,
+                "support": customer_support,
+            }
 
-    if target is not None:
-        if target == "help":
-            await help_command(update, context)
-        elif target == "about":
-            await about(update, context)
-        elif target == "ping":
-            await ping(update, context)
-        elif target == "start":
-            await start(update, context)
-        elif target == "shop":
-            await shop(update, context)
-        elif target == "orders":
-            await my_orders(update, context)
-        elif target == "payment":
-            await payment_methods(update, context)
-        elif target == "support":
-            await customer_support(update, context)
-        else:
-            command = commands.lookup(target)
-
-            if command is None:
-                await message.reply_text(
-                    "This button's command is currently unavailable."
-                )
+            if target in handlers:
+                await handlers[target](update, context)
             else:
-                await commands.send(message, command)
+                command = commands.lookup(target)
+                if command is None:
+                    await message.reply_text(
+                        "This button's command is currently unavailable."
+                    )
+                else:
+                    await commands.send(message, command)
+            return
 
-        return
-
-    count = _LOCAL_MESSAGE_COUNTS[user.id] = (
-        _LOCAL_MESSAGE_COUNTS.get(user.id, 0) + 1
-    )
-
-    await message.reply_text(
-        f"You sent (#{count}):\n{message.text}",
-        reply_markup=_main_menu_keyboard(),
-    )
+        count = _LOCAL_MESSAGE_COUNTS[user.id] = (
+            _LOCAL_MESSAGE_COUNTS.get(user.id, 0) + 1
+        )
+        await message.reply_text(
+            f"You sent (#{count}):\n{message.text}",
+            reply_markup=_main_menu_keyboard(),
+        )
 
 
-# --- Dynamic commands --------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Dynamic commands
+# ---------------------------------------------------------------------------
 
 def _parse_command_name(text: str) -> str:
     token = text.strip().split(maxsplit=1)[0]
@@ -1172,19 +1413,14 @@ async def dynamic_command_dispatcher(
 ) -> None:
     del context
     message = update.effective_message
-
     if message is None or not message.text:
         return
 
     command = commands.lookup(_parse_command_name(message.text))
-
     if command is not None:
         await commands.send(message, command)
-        return
-
-    await message.reply_text(
-        "Unknown command. Type /help for assistance."
-    )
+    else:
+        await message.reply_text("Unknown command. Type /help for assistance.")
 
 
 async def dynamic_command_button(
@@ -1193,7 +1429,6 @@ async def dynamic_command_button(
 ) -> None:
     del context
     query = update.callback_query
-
     if query is None or query.data is None:
         return
 
@@ -1201,19 +1436,17 @@ async def dynamic_command_button(
     command = commands.lookup(name)
 
     if command is None:
-        await query.answer(
-            "This command is no longer available.",
-            show_alert=True,
-        )
+        await query.answer("This command is no longer available.", show_alert=True)
         return
 
     await query.answer()
-
     if query.message is not None:
         await commands.send(query.message, command)
 
 
-# --- Error handling ----------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Error handling and Telegram command menu
+# ---------------------------------------------------------------------------
 
 async def error_handler(
     update: object,
@@ -1237,17 +1470,12 @@ async def error_handler(
         )
 
 
-# --- Telegram command menu ---------------------------------------------------
-
 async def set_bot_commands(application: Application) -> None:
-    """Set customer commands globally and admin commands privately."""
-
     customer_commands = [
         BotCommand(name, description)
         for name, description in BOT_COMMANDS
     ]
 
-    # Keep panel-managed commands available to customers as well.
     for name, description in commands.menu_commands():
         if name not in {item.command for item in customer_commands}:
             customer_commands.append(BotCommand(name, description or name))
@@ -1278,7 +1506,9 @@ async def set_bot_commands(application: Application) -> None:
             logger.warning("Invalid admin Telegram ID in configuration")
 
 
-# --- Register handlers -------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Register handlers
+# ---------------------------------------------------------------------------
 
 def register_handlers(application: Application) -> None:
     # Customer commands.
@@ -1295,103 +1525,73 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("products", admin_products))
     application.add_handler(CommandHandler("deleteproduct", delete_product))
 
-    # Add product conversation.
     add_product_conversation = ConversationHandler(
-        entry_points=[
-            CommandHandler("addproduct", add_product_start),
-        ],
+        entry_points=[CommandHandler("addproduct", add_product_start)],
         states={
-            ADD_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_name)
-            ],
+            ADD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_name)],
             ADD_DESCRIPTION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_description,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_description)
             ],
             ADD_CATEGORY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_category)
+            ],
+            ADD_COUNTRY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_country)
+            ],
+            ADD_FEATURES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_features)
+            ],
+            ADD_COMPATIBILITY: [
                 MessageHandler(
                     filters.TEXT & ~filters.COMMAND,
-                    add_category,
+                    add_compatibility,
                 )
             ],
-            ADD_PRICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, add_price)
+            ADD_LIMITS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_limits)
             ],
+            ADD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_price)],
             ADD_CURRENCY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_currency,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_currency)
             ],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel_admin_action),
-        ],
+        fallbacks=[CommandHandler("cancel", cancel_admin_action)],
         allow_reentry=True,
     )
-
     application.add_handler(add_product_conversation)
 
-    # Edit product conversation.
     edit_product_conversation = ConversationHandler(
-        entry_points=[
-            CommandHandler("editproduct", edit_product_start),
-        ],
+        entry_points=[CommandHandler("editproduct", edit_product_start)],
         states={
-            EDIT_NAME: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_name)
-            ],
+            EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_name)],
             EDIT_DESCRIPTION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_description,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_description)
             ],
             EDIT_CATEGORY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_category,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_category)
             ],
-            EDIT_PRICE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_price)
-            ],
+            EDIT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_price)],
             EDIT_CURRENCY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_currency,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_currency)
             ],
             EDIT_ACTIVE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_active,
-                )
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_active)
             ],
         },
-        fallbacks=[
-            CommandHandler("cancel", cancel_admin_action),
-        ],
+        fallbacks=[CommandHandler("cancel", cancel_admin_action)],
         allow_reentry=True,
     )
-
     application.add_handler(edit_product_conversation)
 
-    # Product catalogue buttons.
+    # Catalogue navigation callbacks.
     application.add_handler(
-        CallbackQueryHandler(
-            product_back,
-            pattern=r"^product:back$",
-        )
+        CallbackQueryHandler(category_navigation, pattern=r"^nav:(categories|cat:[a-z]+)$")
     )
-
     application.add_handler(
-        CallbackQueryHandler(
-            product_details,
-            pattern=r"^product:\d+$",
-        )
+        CallbackQueryHandler(country_navigation, pattern=r"^nav:country:\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(product_details, pattern=r"^product:\d+$")
     )
 
     # Panel-managed command buttons.
@@ -1404,16 +1604,10 @@ def register_handlers(application: Application) -> None:
 
     # Other slash commands configured through the admin panel.
     application.add_handler(
-        MessageHandler(
-            filters.COMMAND,
-            dynamic_command_dispatcher,
-        )
+        MessageHandler(filters.COMMAND, dynamic_command_dispatcher)
     )
 
-    # All customer reply-keyboard buttons and ordinary text.
+    # Reply-keyboard buttons and ordinary text.
     application.add_handler(
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            echo_message,
-        )
+        MessageHandler(filters.TEXT & ~filters.COMMAND, echo_message)
     )
