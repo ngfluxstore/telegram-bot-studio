@@ -2299,6 +2299,7 @@ async def error_handler(
         )
 
 
+
 async def set_bot_commands(application: Application) -> None:
     customer_commands = [
         BotCommand(name, description)
@@ -2347,24 +2348,6 @@ async def set_bot_commands(application: Application) -> None:
                 "Invalid admin Telegram ID in configuration"
             )
 
-    admin_ids = {
-        value.strip()
-        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
-        if value.strip()
-    }
-
-    for admin_id in admin_ids:
-        try:
-            await application.bot.set_my_commands(
-                admin_commands,
-                scope=BotCommandScopeChat(
-                    chat_id=int(admin_id)
-                ),
-            )
-        except (ValueError, TypeError):
-            logger.warning(
-                "Invalid admin Telegram ID in configuration"
-            )
 
 # ---------------------------------------------------------------------------
 # Customer: payment receipt upload
