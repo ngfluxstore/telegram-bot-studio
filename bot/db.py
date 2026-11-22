@@ -142,6 +142,26 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 """
 
+CREATE_SUPPORT_TICKETS_TABLE = """
+CREATE TABLE IF NOT EXISTS support_tickets (
+    id BIGSERIAL PRIMARY KEY,
+    ticket_number TEXT NOT NULL UNIQUE,
+    telegram_id BIGINT NOT NULL,
+    username TEXT NOT NULL DEFAULT '',
+    first_name TEXT NOT NULL DEFAULT '',
+    order_number TEXT NOT NULL DEFAULT '',
+    issue TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS support_tickets_created_at_idx
+ON support_tickets (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS support_tickets_status_idx
+ON support_tickets (status);
+"""
+
 COMMAND_COLUMNS = (
     "id, name, description, reply_type, reply_text, media_url, "
     "keyboard, enabled, show_in_menu, created_at, updated_at"
