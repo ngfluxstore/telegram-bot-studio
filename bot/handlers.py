@@ -469,15 +469,62 @@ async def payment_methods(
         return
 
     await message.reply_text(
-        "💳 NGFLUX STORE PAYMENT METHODS\n\n"
-        "• Binance Pay\n"
-        "• USDT\n"
-        "• BNB\n"
-        "• Litecoin (LTC)\n"
-        "• Bybit Pay\n\n"
-        "Contact support to receive the correct payment details for your order.\n\n"
-        "Payments are verified manually before orders are processed.\n"
-        "Support: @Ngfluxstore",
+        
+async def payment_methods(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    payment_text = (
+        "💳 NGFLUX STORE — PAYMENT METHODS\n\n"
+
+        "1️⃣ BINANCE PAY\n"
+        "Binance Pay ID: 186299385\n"
+        "Account name: ngfluxstore\n\n"
+
+        "2️⃣ BYBIT PAY\n"
+        "Bybit ID: 60400710\n"
+        "Account name: ngfluxstore\n\n"
+
+        "3️⃣ USDT — BEP20\n"
+        "Network: BNB Smart Chain (BEP20)\n"
+        "Address:\n"
+        "0x895a3a2d4f6401d5a418ed4c1e865aa9e78e15aa\n\n"
+
+        "4️⃣ LITECOIN (LTC)\n"
+        "Address:\n"
+        "LZZhKrbf8CxsaykWuvHFBPKauByB9zNwJN\n\n"
+
+        "⚠️ IMPORTANT PAYMENT NOTICE\n"
+        "• Always send the exact requested amount.\n"
+        "• Verify the network and address before sending.\n"
+        "• Never send funds to an unverified address.\n"
+        "• After payment, open a support ticket and provide "
+        "your TXID or payment screenshot.\n"
+        "• Payments are non-refundable once confirmed.\n\n"
+
+        "🎫 Need assistance? Contact @Ngfluxstore."
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🎫 Contact Support",
+                url="https://t.me/Ngfluxstore",
+            )
+        ]
+    ])
+
+    await message.reply_text(
+        payment_text,
+        reply_markup=keyboard,
+    )
+
         reply_markup=_main_menu_keyboard(),
     )
 
