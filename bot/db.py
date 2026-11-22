@@ -190,6 +190,7 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
             await conn.execute(MIGRATE_PRODUCTS_TABLE)
             await conn.execute(CREATE_ORDERS_TABLE)
             await conn.execute(CREATE_PAYMENTS_TABLE)
+            await conn.execute(CREATE_SUPPORT_TICKETS_TABLE)
 
         await seed_full_catalog(pool)
 
