@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from bot import commands, db
+from bot import commands, db, commerce
 
 logger = logging.getLogger(__name__)
 
@@ -898,7 +898,7 @@ async def product_details(
 
     parts.extend([
         "",
-        "🛒 To purchase this product, contact NGFLUX STORE support.",
+        "🛒 Tap Buy Now to create your order.",
         "💳 Payment is verified manually before processing.",
         "",
         "Support: @Ngfluxstore",
@@ -925,7 +925,11 @@ async def product_details(
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton(
-            "💬 Contact Support to Purchase",
+            "🛒 Buy Now",
+            callback_data=f"checkout:create:{product_id}",
+        )],
+        [InlineKeyboardButton(
+            "💬 Contact Support",
             url="https://t.me/Ngfluxstore",
         )],
         [InlineKeyboardButton(
@@ -939,6 +943,105 @@ async def product_details(
         "\n".join(parts),
         reply_markup=keyboard,
     )
+
+
+# ---------------------------------------------------------------------------
+# Customer checkout
+# ---------------------------------------------------------------------------
+
+async def create_checkout_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    query = update.callback_query
+
+    if query is None or query.data is None:
+        return
+
+    user = update.effective_user
+    pool = _get_pool(context)
+
+    if user is None or pool is None:
+        await query.answer(
+            "Checkout is temporarily unavailable. Please try again later.",
+            show_alert=True,
+        )
+        return
+
+    try:
+        product_id = int(
+            query.data.removeprefix("checkout:create:")
+        )
+    except ValueError:
+        await query.answer(
+            "Invalid product selection.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer("Creating your order...")
+
+    try:
+        order = await commerce.create_order(
+            pool,
+            telegram_id=user.id,
+            product_id=product_id,
+            quantity=1,
+        )
+
+    except Exception:
+        logger.exception(
+            "Checkout order creation failed for Telegram user %s "
+            "and product %s",
+            user.id,
+            product_id,
+        )
+
+        if query.message is not None:
+            await query.message.reply_text(
+                "❌ We couldn't create your order.\n\n"
+                "Please try again or contact @Ngfluxstore."
+            )
+        return
+
+    order_number = order["order_number"]
+    product_name = order["product_name"]
+    quantity = order["quantity"]
+    total_amount = Decimal(str(order["total_amount"]))
+    currency = order["currency"]
+
+    confirmation = (
+        "✅ ORDER CREATED SUCCESSFULLY!\n\n"
+        f"📦 Order: {order_number}\n"
+        f"🛍️ Product: {product_name}\n"
+        f"🔢 Quantity: {quantity}\n"
+        f"💰 Total: {currency} {total_amount:,.2f}\n\n"
+        "📌 Status: Awaiting Payment\n\n"
+        "Your order has been saved successfully.\n"
+        "Use /payment to view available payment methods.\n\n"
+        "Contact @Ngfluxstore to receive payment instructions.\n"
+        "Your order will be processed after payment is verified."
+    )
+
+    try:
+        await query.edit_message_text(
+            confirmation,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(
+                    "💬 Contact Support",
+                    url="https://t.me/Ngfluxstore",
+                )
+            ]]),
+        )
+    except Exception:
+        logger.exception(
+            "Order %s was created, but the confirmation message "
+            "could not be edited",
+            order_number,
+        )
+
+        if query.message is not None:
+            await query.message.reply_text(confirmation)
 
 
 # ---------------------------------------------------------------------------
@@ -1969,6 +2072,14 @@ def register_handlers(application: Application) -> None:
         CallbackQueryHandler(
             product_details,
             pattern=r"^product:\d+$",
+        )
+    )
+
+    # Customer checkout callback.
+    application.add_handler(
+        CallbackQueryHandler(
+            create_checkout_order,
+            pattern=r"^checkout:create:\d+$",
         )
     )
 
