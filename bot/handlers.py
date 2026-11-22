@@ -2398,11 +2398,8 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("about", about))
     application.add_handler(CommandHandler("ping", ping))
     
-    # Admin commands.
+       # Admin commands.
 
-    application.add_handler(
-        CommandHandler("products", admin_products)
-    )
     application.add_handler(
         CommandHandler("deleteproduct", delete_product)
     )
