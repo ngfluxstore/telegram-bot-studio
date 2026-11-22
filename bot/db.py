@@ -333,7 +333,6 @@ async def close_pool(pool) -> None:
     logger.info("PostgreSQL pool closed.")
 
 
-
 # --- Dynamic command management ---------------------------------------------
 
 def _command_to_dict(row):
