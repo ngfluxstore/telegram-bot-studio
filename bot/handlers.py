@@ -164,6 +164,174 @@ def _main_menu_keyboard() -> ReplyKeyboardMarkup:
         input_field_placeholder="Choose an NGFLUX STORE option",
     )
 
+async def admin_tickets(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+
+    if message is None:
+        return
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    tickets = await db.get_open_support_tickets(pool)
+
+    if not tickets:
+        await message.reply_text("✅ There are no open support tickets.")
+        return
+
+    lines = ["🎫 OPEN SUPPORT TICKETS\n"]
+
+    for ticket in tickets:
+        lines.append(
+            f"Ticket: {ticket['ticket_number']}\n"
+            f"Customer: {ticket['first_name']}\n"
+            f"Order: {ticket['order_number']}\n"
+            f"Issue: {ticket['issue'][:150]}\n"
+            f"Status: {ticket['status'].upper()}\n"
+        )
+
+    await message.reply_text("\n".join(lines))
+
+
+async def admin_ticket(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+
+    if message is None:
+        return
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    if not context.args:
+        await message.reply_text(
+            "Usage:\n/ticket NGF-SUP-XXXXXXXX"
+        )
+        return
+
+    ticket = await db.get_support_ticket(pool, context.args[0].upper())
+
+    if ticket is None:
+        await message.reply_text("❌ Ticket not found.")
+        return
+
+    await message.reply_text(
+        "🎫 SUPPORT TICKET DETAILS\n\n"
+        f"Ticket: {ticket['ticket_number']}\n"
+        f"Customer: {ticket['first_name']}\n"
+        f"Username: @{ticket['username'] or 'Not available'}\n"
+        f"Telegram ID: {ticket['telegram_id']}\n"
+        f"Order: {ticket['order_number']}\n"
+        f"Issue: {ticket['issue']}\n"
+        f"Status: {ticket['status'].upper()}\n"
+        f"Created: {ticket['created_at']}"
+    )
+
+
+async def admin_resolve_ticket(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+
+    if message is None:
+        return
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    if not context.args:
+        await message.reply_text(
+            "Usage:\n/resolve NGF-SUP-XXXXXXXX"
+        )
+        return
+
+    ticket = await db.resolve_support_ticket(
+        pool,
+        context.args[0].upper(),
+    )
+
+    if ticket is None:
+        await message.reply_text("❌ Ticket not found.")
+        return
+
+    await message.reply_text(
+        f"✅ Ticket {ticket['ticket_number']} has been marked as RESOLVED."
+    )
+
+
+async def admin_reply_ticket(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+
+    if message is None:
+        return
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    if len(context.args) < 2:
+        await message.reply_text(
+            "Usage:\n/reply NGF-SUP-XXXXXXXX Your message here"
+        )
+        return
+
+    ticket_number = context.args[0].upper()
+    reply_text = " ".join(context.args[1:])
+
+    ticket = await db.get_support_ticket(pool, ticket_number)
+
+    if ticket is None:
+        await message.reply_text("❌ Ticket not found.")
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=ticket["telegram_id"],
+            text=(
+                "💬 NGFLUX STORE SUPPORT\n\n"
+                f"Regarding ticket: {ticket_number}\n\n"
+                f"{reply_text}"
+            ),
+        )
+    except Exception:
+        logger.exception("Failed to send support ticket reply.")
+        await message.reply_text(
+            "❌ Could not deliver the reply. The customer may not have started the bot."
+        )
+        return
+
+    await message.reply_text(
+        f"✅ Your reply was sent to the customer for ticket {ticket_number}."
+    )
+    
 
 def _dynamic_commands_text() -> str:
     items = commands.menu_commands()
