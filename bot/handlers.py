@@ -2358,36 +2358,37 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("resolve", admin_resolve_ticket))
     application.add_handler(CommandHandler("reply", admin_reply_ticket))
 
-    # Admin payment approval.
+        # Admin payment approval.
     application.add_handler(
         CommandHandler("approve", approve_order_command)
     )
 
+    # Payment support conversation.
     payment_support_conversation = ConversationHandler(
-    entry_points=[
-        CommandHandler("paysupport", payment_support)
-    ],
-    states={
-        PAYMENT_SUPPORT_ORDER: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                payment_support_order,
-            )
+        entry_points=[
+            CommandHandler("paysupport", payment_support)
         ],
-        PAYMENT_SUPPORT_ISSUE: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                payment_support_issue,
-            )
+        states={
+            PAYMENT_SUPPORT_ORDER: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    payment_support_order,
+                )
+            ],
+            PAYMENT_SUPPORT_ISSUE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    payment_support_issue,
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_payment_support)
         ],
-    },
-    fallbacks=[
-        CommandHandler("cancel", cancel_payment_support)
-    ],
-    allow_reentry=True,
-)
+        allow_reentry=True,
+    )
 
-application.add_handler(payment_support_conversation)
+    application.add_handler(payment_support_conversation)
 
     application.add_handler(payment_support_conversation)
     application.add_handler(CommandHandler("support", customer_support))
