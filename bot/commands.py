@@ -1,387 +1,224 @@
 
-"""NGFLUX STORE order and payment operations."""
+"""Dynamic Telegram command registry for NGFLUX STORE."""
 
-import secrets
-import string
-import json
-from decimal import Decimal, InvalidOperation
+import logging
 
-import asyncpg
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot import db
 
-ORDER_STATUSES = {
-    "awaiting_payment",
-    "payment_submitted",
-    "paid",
-    "processing",
-    "completed",
-    "cancelled",
-    "rejected",
+logger = logging.getLogger(__name__)
+
+RESERVED_NAMES = {
+    "start",
+    "shop",
+    "orders",
+    "payment",
+    "support",
+    "help",
+    "about",
+    "ping",
+    "products",
+    "addproduct",
+    "editproduct",
+    "deleteproduct",
+    "cancel",
 }
 
+REPLY_TYPES = {"text", "photo", "document"}
 
-def money(value):
-    try:
-        result = Decimal(str(value)).quantize(Decimal("0.01"))
-    except (InvalidOperation, TypeError, ValueError):
-        raise ValueError("Invalid price.")
+_commands = {}
+_button_targets = {}
 
-    if not result.is_finite() or result < 0:
-        raise ValueError("Invalid price.")
+
+def _normalise_name(value):
+    """Convert command text or a button target to a command name."""
+    if value is None:
+        return ""
+
+    name = str(value).strip()
+
+    if name.startswith("/"):
+        name = name[1:]
+
+    if "@" in name:
+        name = name.split("@", 1)[0]
+
+    return name.strip().lower()
+
+
+async def reload(pool):
+    """Reload enabled commands and menu buttons from PostgreSQL."""
+    global _commands, _button_targets
+
+    _commands = {}
+    _button_targets = {}
+
+    if pool is None:
+        logger.warning("Command registry cleared: database unavailable.")
+        return
+
+    command_rows = await db.list_commands(pool, enabled_only=True)
+    button_rows = await db.list_menu_buttons(pool, enabled_only=True)
+
+    for row in command_rows:
+        name = _normalise_name(row.get("name"))
+
+        if not name or name in RESERVED_NAMES:
+            continue
+
+        reply_type = row.get("reply_type", "text")
+
+        if reply_type not in REPLY_TYPES:
+            logger.warning("Skipping command %s: invalid reply type.", name)
+            continue
+
+        _commands[name] = dict(row)
+
+    for row in button_rows:
+        label = str(row.get("label") or "").strip()
+        target = _normalise_name(row.get("command_name"))
+
+        if label and target:
+            _button_targets[label.casefold()] = target
+
+    logger.info(
+        "Command registry loaded: %d commands and %d buttons.",
+        len(_commands),
+        len(_button_targets),
+    )
+
+
+def menu_commands():
+    """Return enabled custom commands configured to appear in Telegram's menu."""
+    result = []
+
+    for name, item in sorted(_commands.items()):
+        if not item.get("show_in_menu", True):
+            continue
+
+        description = (
+            str(item.get("description") or "").strip()
+            or f"Open {name}"
+        )
+
+        result.append(
+            BotCommand(
+                command=name,
+                description=description[:256],
+            )
+        )
 
     return result
 
 
-def make_order_number():
-    chars = string.ascii_uppercase + string.digits
-    return "NGF-" + "".join(
-        secrets.choice(chars) for _ in range(8)
-    )
+def button_target(text):
+    """Resolve a typed button label or /command to its command name."""
+    if text is None:
+        return None
+
+    value = str(text).strip()
+
+    if not value:
+        return None
+
+    target = _button_targets.get(value.casefold())
+
+    if target:
+        return target
+
+    name = _normalise_name(value)
+
+    if name in _commands or name in RESERVED_NAMES:
+        return name
+
+    return None
 
 
-async def create_order(
-    pool,
-    telegram_id,
-    product_id,
-    quantity=1,
-    selected_option=None
-):
-    if not isinstance(quantity, int) or not 1 <= quantity <= 100:
-        raise ValueError("Quantity must be between 1 and 100.")
+def lookup(name):
+    """Find an enabled dynamic command by name."""
+    name = _normalise_name(name)
 
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            product = await conn.fetchrow(
-                """
-                SELECT * FROM products
-                WHERE id=$1 AND active=TRUE
-                FOR SHARE
-                """,
-                product_id
-            )
+    command = _commands.get(name)
 
-            if not product:
-                raise ValueError("Product is unavailable.")
+    return dict(command) if command else None
 
-            unit_price = money(product["price"])
-            product_name = product["name"]
 
-            options = product["pricing_options"] or []
+def _response_keyboard(layout):
+    """Build inline response buttons from the admin panel's saved layout."""
+    if not layout:
+        return None
 
-            if isinstance(options, str):
-                options = json.loads(options)
+    rows = []
 
-            if selected_option:
-                option = next(
-                    (
-                        item for item in options
-                        if item.get("label", "").casefold()
-                        == selected_option.strip().casefold()
-                    ),
-                    None
+    for group in layout:
+        buttons = []
+
+        for value in group:
+            target = _normalise_name(value)
+
+            if not target:
+                continue
+
+            label = str(value).strip()
+
+            buttons.append(
+                InlineKeyboardButton(
+                    text=label[:64],
+                    callback_data=f"command:{target}",
                 )
+            )
 
-                if not option:
-                    raise ValueError("Pricing option unavailable.")
+        if buttons:
+            rows.append(buttons)
 
-                unit_price = money(option["price"])
-                product_name += " - " + option["label"]
-
-            total = unit_price * quantity
-
-            order = None
-
-            for attempt in range(5):
-                order_number = make_order_number()
-
-                try:
-                    order = await conn.fetchrow(
-                        """
-                        INSERT INTO orders
-                        (
-                            order_number,
-                            telegram_id,
-                            product_id,
-                            product_name,
-                            quantity,
-                            unit_price,
-                            total_amount,
-                            currency,
-                            status
-                        )
-                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,
-                                'awaiting_payment')
-                        RETURNING *
-                        """,
-                        order_number,
-                        telegram_id,
-                        product_id,
-                        product_name,
-                        quantity,
-                        unit_price,
-                        total,
-                        product["currency"]
-                    )
-                    break
-
-                except asyncpg.UniqueViolationError:
-                    if attempt == 4:
-                        raise RuntimeError(
-                            "Could not generate a unique order number."
-                        )
-
-            return dict(order)
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
-async def customer_orders(pool, telegram_id):
-    rows = await pool.fetch(
-        """
-        SELECT *
-        FROM orders
-        WHERE telegram_id=$1
-        ORDER BY created_at DESC
-        LIMIT 30
-        """,
-        telegram_id
+async def send(message, command):
+    """Send a dynamic command's configured text, photo or document reply."""
+    if not command:
+        return None
+
+    reply_type = command.get("reply_type", "text")
+    reply_text = str(command.get("reply_text") or "")
+    media_url = str(command.get("media_url") or "").strip()
+
+    if reply_type not in REPLY_TYPES:
+        await message.reply_text("This command has an invalid reply type.")
+        return None
+
+    keyboard = _response_keyboard(command.get("keyboard"))
+
+    if reply_type == "photo":
+        if not media_url:
+            await message.reply_text(
+                reply_text or "The image for this command is unavailable.",
+                reply_markup=keyboard,
+            )
+            return None
+
+        return await message.reply_photo(
+            photo=media_url,
+            caption=reply_text or None,
+            reply_markup=keyboard,
+        )
+
+    if reply_type == "document":
+        if not media_url:
+            await message.reply_text(
+                reply_text or "The document for this command is unavailable.",
+                reply_markup=keyboard,
+            )
+            return None
+
+        return await message.reply_document(
+            document=media_url,
+            caption=reply_text or None,
+            reply_markup=keyboard,
+        )
+
+    return await message.reply_text(
+        reply_text or "This command has no reply configured.",
+        reply_markup=keyboard,
     )
-
-    return [dict(row) for row in rows]
-
-
-async def get_customer_order(pool, order_number, telegram_id):
-    row = await pool.fetchrow(
-        """
-        SELECT *
-        FROM orders
-        WHERE order_number=$1 AND telegram_id=$2
-        """,
-        order_number.strip().upper(),
-        telegram_id
-    )
-
-    return dict(row) if row else None
-
-
-async def submit_payment(
-    pool,
-    order_number,
-    telegram_id,
-    payment_method,
-    reference,
-    proof_file_id=None
-):
-    if not payment_method or not payment_method.strip():
-        raise ValueError("Payment method is required.")
-
-    if not reference or not reference.strip():
-        raise ValueError("Transaction reference is required.")
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            order = await conn.fetchrow(
-                """
-                SELECT *
-                FROM orders
-                WHERE order_number=$1 AND telegram_id=$2
-                FOR UPDATE
-                """,
-                order_number.strip().upper(),
-                telegram_id
-            )
-
-            if not order:
-                raise ValueError("Order not found.")
-
-            if order["status"] != "awaiting_payment":
-                raise ValueError(
-                    "This order cannot accept another payment submission."
-                )
-
-            existing = await conn.fetchval(
-                """
-                SELECT EXISTS(
-                    SELECT 1 FROM payments
-                    WHERE order_id=$1 AND status='pending'
-                )
-                """,
-                order["id"]
-            )
-
-            if existing:
-                raise ValueError(
-                    "A payment for this order is already awaiting review."
-                )
-
-            payment = await conn.fetchrow(
-                """
-                INSERT INTO payments
-                (
-                    order_id,
-                    payment_method,
-                    transaction_reference,
-                    proof_file_id,
-                    status
-                )
-                VALUES ($1,$2,$3,$4,'pending')
-                RETURNING *
-                """,
-                order["id"],
-                payment_method.strip(),
-                reference.strip(),
-                proof_file_id
-            )
-
-            await conn.execute(
-                """
-                UPDATE orders
-                SET status='payment_submitted',
-                    updated_at=now()
-                WHERE id=$1
-                """,
-                order["id"]
-            )
-
-    return dict(payment)
-
-
-async def pending_payments(pool):
-    rows = await pool.fetch(
-        """
-        SELECT
-            p.*,
-            o.order_number,
-            o.telegram_id,
-            o.product_name,
-            o.total_amount,
-            o.currency
-        FROM payments p
-        JOIN orders o ON o.id=p.order_id
-        WHERE p.status='pending'
-        ORDER BY p.created_at ASC
-        """
-    )
-
-    return [dict(row) for row in rows]
-
-
-async def review_payment(pool, payment_id, approved, admin):
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            payment = await conn.fetchrow(
-                """
-                SELECT
-                    p.*,
-                    o.id AS linked_order_id,
-                    o.telegram_id,
-                    o.order_number
-                FROM payments p
-                JOIN orders o ON o.id=p.order_id
-                WHERE p.id=$1
-                FOR UPDATE OF p, o
-                """,
-                payment_id
-            )
-
-            if not payment:
-                raise ValueError("Payment not found.")
-
-            if payment["status"] != "pending":
-                raise ValueError("Payment already reviewed.")
-
-            payment_status = (
-                "approved" if approved else "rejected"
-            )
-
-            order_status = (
-                "paid" if approved else "awaiting_payment"
-            )
-
-            await conn.execute(
-                """
-                UPDATE payments
-                SET status=$2,
-                    reviewed_by=$3,
-                    reviewed_at=now()
-                WHERE id=$1
-                """,
-                payment_id,
-                payment_status,
-                str(admin)
-            )
-
-            await conn.execute(
-                """
-                UPDATE orders
-                SET status=$2,
-                    updated_at=now()
-                WHERE id=$1
-                """,
-                payment["linked_order_id"],
-                order_status
-            )
-
-            updated = await conn.fetchrow(
-                """
-                SELECT
-                    p.*,
-                    o.order_number,
-                    o.telegram_id,
-                    o.product_name,
-                    o.total_amount,
-                    o.currency
-                FROM payments p
-                JOIN orders o ON o.id=p.order_id
-                WHERE p.id=$1
-                """,
-                payment_id
-            )
-
-    return dict(updated)
-
-
-async def update_order(
-    pool,
-    order_number,
-    status,
-    delivery_note=""
-):
-    if status not in ORDER_STATUSES:
-        raise ValueError("Invalid order status.")
-
-    row = await pool.fetchrow(
-        """
-        UPDATE orders
-        SET status=$2,
-            delivery_note=$3,
-            updated_at=now()
-        WHERE order_number=$1
-        RETURNING *
-        """,
-        order_number.strip().upper(),
-        status,
-        delivery_note
-    )
-
-    if not row:
-        raise ValueError("Order not found.")
-
-    return dict(row)
-
-
-async def list_orders(pool, limit=50):
-    rows = await pool.fetch(
-        """
-        SELECT
-            o.*,
-            u.username,
-            u.first_name
-        FROM orders o
-        LEFT JOIN users u
-            ON u.telegram_id=o.telegram_id
-        ORDER BY o.created_at DESC
-        LIMIT $1
-        """,
-        max(1, min(int(limit), 200))
-    )
-
-    return [dict(row) for row in rows]
