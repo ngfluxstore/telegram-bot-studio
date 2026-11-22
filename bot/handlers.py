@@ -508,6 +508,39 @@ async def payment_methods(
         reply_markup=keyboard,
     )
 
+async def payment_support(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    del context
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "🎫 Contact NGFLUX Support",
+                url="https://t.me/Ngfluxstore",
+            )
+        ]
+    ])
+
+    await message.reply_text(
+        "🛟 NGFLUX STORE — PAYMENT SUPPORT\n\n"
+        "Having a problem with a payment or order?\n\n"
+        "Please contact our support team and provide:\n"
+        "1. Your order number.\n"
+        "2. A description of the problem.\n"
+        "3. Your Telegram username.\n"
+        "4. Your Telegram Stars transaction details, "
+        "if applicable.\n\n"
+        "Our team will review your request and assist you.\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙",
+        reply_markup=keyboard,
+    )
+
 
 
 async def customer_support(
