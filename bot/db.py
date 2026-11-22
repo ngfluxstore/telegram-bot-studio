@@ -215,37 +215,6 @@ async def count_users(pool) -> int:
     return int(await pool.fetchval("SELECT count(*) FROM users;"))
 
 
-async def create_support_ticket(
-    pool,
-    *,
-    ticket_number,
-    telegram_id,
-    username,
-    first_name,
-    order_number,
-    issue,
-):
-    row = await pool.fetchrow(
-        """
-        INSERT INTO support_tickets (
-            ticket_number,
-            telegram_id,
-            username,
-            first_name,
-            order_number,
-            issue
-        )
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING *;
-        """,
-        ticket_number,
-        telegram_id,
-        username,
-        first_name,
-        order_number,
-        issue,
-    )
-    return dict(row)
 
 async def get_open_support_tickets(pool, limit=20):
     rows = await pool.fetch(
@@ -284,11 +253,85 @@ async def resolve_support_ticket(pool, ticket_number):
         ticket_number,
     )
     return dict(row) if row else None
-    
+
+
+# --- Order management -------------------------------------------------------
+
+async def get_order_by_number(pool, order_number):
+    row = await pool.fetchrow(
+        """
+        SELECT *
+        FROM orders
+        WHERE order_number = $1;
+        """,
+        order_number.upper(),
+    )
+    return dict(row) if row else None
+
+
+async def approve_order(pool, order_number, reviewed_by):
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE orders
+                SET status = 'paid',
+                    updated_at = now()
+                WHERE order_number = $1
+                  AND status = 'awaiting_payment'
+                RETURNING *;
+                """,
+                order_number.upper(),
+            )
+
+            if not row:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT *
+                    FROM orders
+                    WHERE order_number = $1;
+                    """,
+                    order_number.upper(),
+                )
+
+                if not existing:
+                    return {"result": "not_found"}
+
+                if existing["status"] == "paid":
+                    return {"result": "already_paid"}
+
+                return {
+                    "result": "invalid_status",
+                    "order": dict(existing),
+                }
+
+            order = dict(row)
+
+            await conn.execute(
+                """
+                UPDATE payments
+                SET status = 'approved',
+                    reviewed_by = $2,
+                    reviewed_at = now()
+                WHERE order_id = $1
+                  AND status = 'pending';
+                """,
+                order["id"],
+                str(reviewed_by),
+            )
+
+            return {
+                "result": "approved",
+                "order": order,
+            }
+
+
+# --- Database shutdown ------------------------------------------------------
 
 async def close_pool(pool) -> None:
     await pool.close()
     logger.info("PostgreSQL pool closed.")
+
 
 
 # --- Dynamic command management ---------------------------------------------
