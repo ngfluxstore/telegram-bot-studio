@@ -215,6 +215,39 @@ async def count_users(pool) -> int:
     return int(await pool.fetchval("SELECT count(*) FROM users;"))
 
 
+async def create_support_ticket(
+    pool,
+    *,
+    ticket_number,
+    telegram_id,
+    username,
+    first_name,
+    order_number,
+    issue,
+):
+    row = await pool.fetchrow(
+        """
+        INSERT INTO support_tickets (
+            ticket_number,
+            telegram_id,
+            username,
+            first_name,
+            order_number,
+            issue
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *;
+        """,
+        ticket_number,
+        telegram_id,
+        username,
+        first_name,
+        order_number,
+        issue,
+    )
+    return dict(row)
+
+
 async def close_pool(pool) -> None:
     await pool.close()
     logger.info("PostgreSQL pool closed.")
