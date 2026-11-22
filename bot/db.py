@@ -247,6 +247,44 @@ async def create_support_ticket(
     )
     return dict(row)
 
+async def get_open_support_tickets(pool, limit=20):
+    rows = await pool.fetch(
+        """
+        SELECT *
+        FROM support_tickets
+        WHERE status = 'open'
+        ORDER BY created_at DESC
+        LIMIT $1;
+        """,
+        limit,
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_support_ticket(pool, ticket_number):
+    row = await pool.fetchrow(
+        """
+        SELECT *
+        FROM support_tickets
+        WHERE ticket_number = $1;
+        """,
+        ticket_number,
+    )
+    return dict(row) if row else None
+
+
+async def resolve_support_ticket(pool, ticket_number):
+    row = await pool.fetchrow(
+        """
+        UPDATE support_tickets
+        SET status = 'resolved'
+        WHERE ticket_number = $1
+        RETURNING *;
+        """,
+        ticket_number,
+    )
+    return dict(row) if row else None
+    
 
 async def close_pool(pool) -> None:
     await pool.close()
