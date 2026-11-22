@@ -2303,10 +2303,6 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("shop", shop))
     application.add_handler(CommandHandler("orders", my_orders))
     application.add_handler(CommandHandler("payment", payment_methods))
-    application.add_handler(CommandHandler("tickets", admin_tickets))
-    application.add_handler(CommandHandler("ticket", admin_ticket))
-    application.add_handler(CommandHandler("resolve", admin_resolve_ticket))
-    application.add_handler(CommandHandler("reply", admin_reply_ticket))
 
     # Admin support-ticket commands.
     application.add_handler(CommandHandler("tickets", admin_tickets))
@@ -2343,7 +2339,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
     application.add_handler(CommandHandler("ping", ping))
-
+    
     # Admin commands.
 
     application.add_handler(
