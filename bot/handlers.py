@@ -3,8 +3,8 @@
 
 import logging
 import os
+import secrets
 from decimal import Decimal, InvalidOperation
-
 from telegram import (
     BotCommand,
     BotCommandScopeChat,
