@@ -1980,16 +1980,17 @@ async def set_bot_commands(application: Application) -> None:
 def register_handlers(application: Application) -> None:
     # Customer commands.
     application.add_handler(CommandHandler("start", start))
-application.add_handler(CommandHandler("shop", shop))
-application.add_handler(CommandHandler("orders", my_orders))
-application.add_handler(CommandHandler("payment", payment_methods))
-application.add_handler(CommandHandler("paysupport", payment_support))
-application.add_handler(CommandHandler("support", customer_support))
-application.add_handler(CommandHandler("help", help_command))
-application.add_handler(CommandHandler("about", about))
-application.add_handler(CommandHandler("ping", ping))
+    application.add_handler(CommandHandler("shop", shop))
+    application.add_handler(CommandHandler("orders", my_orders))
+    application.add_handler(CommandHandler("payment", payment_methods))
+    application.add_handler(CommandHandler("paysupport", payment_support))
+    application.add_handler(CommandHandler("support", customer_support))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("about", about))
+    application.add_handler(CommandHandler("ping", ping))
 
     # Admin commands.
+
     application.add_handler(
         CommandHandler("products", admin_products)
     )
