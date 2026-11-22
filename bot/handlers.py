@@ -2309,16 +2309,41 @@ async def set_bot_commands(application: Application) -> None:
                 BotCommand(name, description or name)
             )
 
+    # Set customer commands.
     await application.bot.set_my_commands(customer_commands)
 
+    # Admin commands.
     admin_commands = customer_commands + [
-    BotCommand("addproduct", "Add a product"),
-    BotCommand("products", "View all products"),
-    BotCommand("editproduct", "Edit a product"),
-    BotCommand("deleteproduct", "Deactivate a product"),
-    BotCommand("approve", "Approve a paid order"),
-    BotCommand("cancel", "Cancel an admin operation"),
-]
+        BotCommand("addproduct", "Add a product"),
+        BotCommand("products", "View all products"),
+        BotCommand("editproduct", "Edit a product"),
+        BotCommand("deleteproduct", "Deactivate a product"),
+        BotCommand("approve", "Approve a paid order"),
+        BotCommand("tickets", "View open support tickets"),
+        BotCommand("ticket", "View ticket details"),
+        BotCommand("resolve", "Resolve support ticket"),
+        BotCommand("reply", "Reply to support ticket"),
+        BotCommand("cancel", "Cancel an operation"),
+    ]
+
+    admin_ids = {
+        value.strip()
+        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+        if value.strip()
+    }
+
+    for admin_id in admin_ids:
+        try:
+            await application.bot.set_my_commands(
+                admin_commands,
+                scope=BotCommandScopeChat(
+                    chat_id=int(admin_id)
+                ),
+            )
+        except (ValueError, TypeError):
+            logger.warning(
+                "Invalid admin Telegram ID in configuration"
+            )
 
     admin_ids = {
         value.strip()
@@ -2343,6 +2368,7 @@ async def set_bot_commands(application: Application) -> None:
 # ---------------------------------------------------------------------------
 # Register handlers
 # ---------------------------------------------------------------------------
+
 
 
 def register_handlers(application: Application) -> None:
@@ -2390,9 +2416,34 @@ def register_handlers(application: Application) -> None:
 
     application.add_handler(payment_support_conversation)
 
-    application.add_handler(payment_support_conversation)
+    # Customer payment receipt conversation.
+    receipt_conversation = ConversationHandler(
+        entry_points=[
+            CommandHandler("receipt", receipt_start)
+        ],
+        states={
+            RECEIPT_ORDER: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    receipt_order,
+                )
+            ],
+            RECEIPT_FILE: [
+                MessageHandler(
+                    filters.PHOTO | filters.Document.PDF,
+                    receipt_file,
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_receipt_upload)
+        ],
+        allow_reentry=True,
+    )
 
-    application.add_handler(payment_support_conversation)
+    application.add_handler(receipt_conversation)
+
+    # Other customer commands.
     application.add_handler(CommandHandler("support", customer_support))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
