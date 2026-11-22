@@ -2358,7 +2358,7 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("resolve", admin_resolve_ticket))
     application.add_handler(CommandHandler("reply", admin_reply_ticket))
 
-        # Admin payment approval.
+    # Admin payment approval.
     application.add_handler(
         CommandHandler("approve", approve_order_command)
     )
@@ -2387,6 +2387,8 @@ def register_handlers(application: Application) -> None:
         ],
         allow_reentry=True,
     )
+
+    application.add_handler(payment_support_conversation)
 
     application.add_handler(payment_support_conversation)
 
