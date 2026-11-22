@@ -36,6 +36,7 @@ BOT_COMMANDS = (
     ("shop", "Browse store products"),
     ("orders", "View your previous orders"),
     ("payment", "View payment methods"),
+    ("paysupport", "Create a payment support ticket"),
     ("support", "Contact customer support"),
     ("help", "Show help"),
     ("about", "About NGFLUX STORE"),
