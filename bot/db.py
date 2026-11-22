@@ -142,6 +142,31 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 """
 
+# Stores Telegram photo/PDF file IDs and links each receipt to its order.
+CREATE_PAYMENT_RECEIPTS_TABLE = """
+CREATE TABLE IF NOT EXISTS payment_receipts (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+    telegram_id BIGINT NOT NULL REFERENCES users(telegram_id),
+    file_id TEXT NOT NULL,
+    file_unique_id TEXT,
+    file_type TEXT NOT NULL
+        CHECK (file_type IN ('photo', 'document')),
+    file_name TEXT,
+    mime_type TEXT,
+    status TEXT NOT NULL DEFAULT 'pending_review',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_by TEXT,
+    reviewed_at TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS payment_receipts_order_id_idx
+ON payment_receipts (order_id);
+
+CREATE INDEX IF NOT EXISTS payment_receipts_status_idx
+ON payment_receipts (status);
+"""
+
 CREATE_SUPPORT_TICKETS_TABLE = """
 CREATE TABLE IF NOT EXISTS support_tickets (
     id BIGSERIAL PRIMARY KEY,
@@ -190,6 +215,7 @@ async def create_pool(dsn: str) -> asyncpg.Pool:
             await conn.execute(MIGRATE_PRODUCTS_TABLE)
             await conn.execute(CREATE_ORDERS_TABLE)
             await conn.execute(CREATE_PAYMENTS_TABLE)
+            await conn.execute(CREATE_PAYMENT_RECEIPTS_TABLE)
             await conn.execute(CREATE_SUPPORT_TICKETS_TABLE)
 
         await seed_full_catalog(pool)
@@ -215,6 +241,7 @@ async def count_users(pool) -> int:
     return int(await pool.fetchval("SELECT count(*) FROM users;"))
 
 
+# --- Support tickets --------------------------------------------------------
 
 async def get_open_support_tickets(pool, limit=20):
     rows = await pool.fetch(
@@ -255,6 +282,39 @@ async def resolve_support_ticket(pool, ticket_number):
     return dict(row) if row else None
 
 
+async def create_support_ticket(
+    pool,
+    *,
+    ticket_number,
+    telegram_id,
+    username,
+    first_name,
+    order_number,
+    issue,
+):
+    row = await pool.fetchrow(
+        """
+        INSERT INTO support_tickets (
+            ticket_number,
+            telegram_id,
+            username,
+            first_name,
+            order_number,
+            issue
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        RETURNING *;
+        """,
+        ticket_number,
+        telegram_id,
+        username or "",
+        first_name or "",
+        order_number or "",
+        issue,
+    )
+    return dict(row)
+
+
 # --- Order management -------------------------------------------------------
 
 async def get_order_by_number(pool, order_number):
@@ -264,7 +324,164 @@ async def get_order_by_number(pool, order_number):
         FROM orders
         WHERE order_number = $1;
         """,
-        order_number.upper(),
+        order_number.strip().upper(),
+    )
+    return dict(row) if row else None
+
+
+async def get_customer_order_for_receipt(
+    pool, order_number, telegram_id
+):
+    """
+    Get an unpaid order belonging to the customer.
+
+    Returns None if the order does not exist, belongs to another
+    Telegram user, or is no longer awaiting payment.
+    """
+    row = await pool.fetchrow(
+        """
+        SELECT *
+        FROM orders
+        WHERE order_number = $1
+          AND telegram_id = $2
+          AND status = 'awaiting_payment';
+        """,
+        order_number.strip().upper(),
+        telegram_id,
+    )
+    return dict(row) if row else None
+
+
+async def save_payment_receipt(
+    pool,
+    *,
+    order_number,
+    telegram_id,
+    file_id,
+    file_type,
+    file_unique_id=None,
+    file_name=None,
+    mime_type=None,
+):
+    """
+    Save a receipt for an unpaid order owned by the submitting user.
+
+    The order is locked during the operation to prevent its payment
+    status changing while the receipt is being saved.
+
+    Returns the saved receipt dictionary, or None if the order
+    is not eligible.
+    """
+    if file_type not in ("photo", "document"):
+        raise ValueError("Receipt file_type must be photo or document.")
+
+    if not file_id:
+        raise ValueError("A Telegram file_id is required.")
+
+    if file_type == "document" and mime_type != "application/pdf":
+        raise ValueError("Only PDF documents are accepted.")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            order = await conn.fetchrow(
+                """
+                SELECT id
+                FROM orders
+                WHERE order_number = $1
+                  AND telegram_id = $2
+                  AND status = 'awaiting_payment'
+                FOR UPDATE;
+                """,
+                order_number.strip().upper(),
+                telegram_id,
+            )
+
+            if not order:
+                return None
+
+            row = await conn.fetchrow(
+                """
+                INSERT INTO payment_receipts (
+                    order_id,
+                    telegram_id,
+                    file_id,
+                    file_unique_id,
+                    file_type,
+                    file_name,
+                    mime_type
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                RETURNING *;
+                """,
+                order["id"],
+                telegram_id,
+                file_id,
+                file_unique_id,
+                file_type,
+                file_name,
+                mime_type,
+            )
+
+            return dict(row)
+
+
+async def get_payment_receipts(pool, order_number):
+    """Get all receipt submissions for an order."""
+    rows = await pool.fetch(
+        """
+        SELECT pr.*
+        FROM payment_receipts pr
+        JOIN orders o ON o.id = pr.order_id
+        WHERE o.order_number = $1
+        ORDER BY pr.created_at DESC;
+        """,
+        order_number.strip().upper(),
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_payment_receipt(pool, receipt_id):
+    """Get one receipt by its database ID."""
+    row = await pool.fetchrow(
+        """
+        SELECT pr.*, o.order_number, o.total_amount, o.currency,
+               o.product_name, o.status AS order_status
+        FROM payment_receipts pr
+        JOIN orders o ON o.id = pr.order_id
+        WHERE pr.id = $1;
+        """,
+        receipt_id,
+    )
+    return dict(row) if row else None
+
+
+async def review_payment_receipt(
+    pool, receipt_id, reviewed_by, status="approved"
+):
+    """
+    Mark a receipt as approved or rejected.
+
+    This only updates the receipt review record. The existing
+    approve_order() function remains responsible for marking
+    an order as paid.
+    """
+    if status not in ("approved", "rejected"):
+        raise ValueError(
+            "Receipt status must be 'approved' or 'rejected'."
+        )
+
+    row = await pool.fetchrow(
+        """
+        UPDATE payment_receipts
+        SET status = $2,
+            reviewed_by = $3,
+            reviewed_at = now()
+        WHERE id = $1
+        RETURNING *;
+        """,
+        receipt_id,
+        status,
+        str(reviewed_by),
     )
     return dict(row) if row else None
 
@@ -281,7 +498,7 @@ async def approve_order(pool, order_number, reviewed_by):
                   AND status = 'awaiting_payment'
                 RETURNING *;
                 """,
-                order_number.upper(),
+                order_number.strip().upper(),
             )
 
             if not row:
@@ -291,7 +508,7 @@ async def approve_order(pool, order_number, reviewed_by):
                     FROM orders
                     WHERE order_number = $1;
                     """,
-                    order_number.upper(),
+                    order_number.strip().upper(),
                 )
 
                 if not existing:
@@ -1062,10 +1279,7 @@ PRODUCT_CATALOG = [
 # --- Catalogue seeding -------------------------------------------------------
 
 async def seed_wallet_catalog(pool):
-    """
-    Insert the 22 wallet products.
-    Existing matching products are not overwritten.
-    """
+    """Insert wallet products without overwriting existing products."""
 
     added = 0
 
@@ -1112,10 +1326,7 @@ async def seed_wallet_catalog(pool):
 
 
 async def seed_product_catalog(pool):
-    """
-    Insert non-wallet catalogue products.
-    Existing matching products are not overwritten.
-    """
+    """Insert non-wallet products without overwriting existing products."""
 
     added = 0
 
@@ -1164,14 +1375,10 @@ async def seed_product_catalog(pool):
 
 
 async def seed_full_catalog(pool):
-    """
-    Seed all NGFLUX STORE catalogue products.
-    Existing products are preserved.
-    """
+    """Seed all NGFLUX STORE catalogue products."""
 
     wallet_count = await seed_wallet_catalog(pool)
 
-    # Migrate old wallet category names to the official category.
     await pool.execute(
         """
         UPDATE products
