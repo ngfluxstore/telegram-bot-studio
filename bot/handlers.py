@@ -2133,7 +2133,32 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("shop", shop))
     application.add_handler(CommandHandler("orders", my_orders))
     application.add_handler(CommandHandler("payment", payment_methods))
-    application.add_handler(CommandHandler("paysupport", payment_support))
+
+    payment_support_conversation = ConversationHandler(
+        entry_points=[
+            CommandHandler("paysupport", payment_support)
+        ],
+        states={
+            PAYMENT_SUPPORT_ORDER: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    payment_support_order,
+                )
+            ],
+            PAYMENT_SUPPORT_ISSUE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    payment_support_issue,
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_payment_support)
+        ],
+        allow_reentry=True,
+    )
+
+    application.add_handler(payment_support_conversation)
     application.add_handler(CommandHandler("support", customer_support))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("about", about))
