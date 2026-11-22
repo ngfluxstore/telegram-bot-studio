@@ -36,6 +36,7 @@ BOT_COMMANDS = (
     ("shop", "Browse store products"),
     ("orders", "View your previous orders"),
     ("payment", "View payment methods"),
+    ("receipt", "Upload payment receipt"),
     ("paysupport", "Create a payment support ticket"),
     ("support", "Contact customer support"),
     ("help", "Show help"),
@@ -58,6 +59,7 @@ HELP_TEXT = """NGFLUX STORE Commands:
 /orders - View your previous orders
 /payment - View payment methods
 /paysupport - Create a payment support ticket
+/receipt - Upload your payment receipt
 /support - Contact customer support
 /help - Show help
 /about - Store information"""
