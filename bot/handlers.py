@@ -2364,6 +2364,262 @@ async def set_bot_commands(application: Application) -> None:
                 "Invalid admin Telegram ID in configuration"
             )
 
+# ---------------------------------------------------------------------------
+# Customer: payment receipt upload
+# ---------------------------------------------------------------------------
+
+RECEIPT_ORDER = "RECEIPT_ORDER"
+RECEIPT_FILE = "RECEIPT_FILE"
+
+
+async def receipt_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None:
+        return ConversationHandler.END
+
+    pool = _get_pool(context)
+
+    if pool is None:
+        await message.reply_text(
+            "Receipt submission is temporarily unavailable. Please try again."
+        )
+        return ConversationHandler.END
+
+    context.user_data["receipt_upload"] = {}
+
+    await message.reply_text(
+        "🧾 PAYMENT RECEIPT UPLOAD\n\n"
+        "Please enter your NGFLUX STORE order number.\n\n"
+        "You can find it in your order confirmation message.\n\n"
+        "Send /cancel to stop."
+    )
+
+    return RECEIPT_ORDER
+
+
+async def receipt_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None or not message.text:
+        return RECEIPT_ORDER
+
+    order_number = message.text.strip().upper()
+
+    if len(order_number) > 100:
+        await message.reply_text("Please enter a valid order number.")
+        return RECEIPT_ORDER
+
+    pool = _get_pool(context)
+
+    if pool is None:
+        await message.reply_text("Database is unavailable. Please try again.")
+        return ConversationHandler.END
+
+    try:
+        order = await db.get_customer_order_for_receipt(
+            pool,
+            order_number,
+            user.id,
+        )
+    except Exception:
+        logger.exception("Could not verify receipt order.")
+        await message.reply_text(
+            "We couldn't verify your order. Please try again later."
+        )
+        return ConversationHandler.END
+
+    if order is None:
+        await message.reply_text(
+            "❌ Order not found, or it is not awaiting payment.\n\n"
+            "Please check the order number and try again."
+        )
+        return RECEIPT_ORDER
+
+    context.user_data["receipt_upload"] = {
+        "order_number": order_number,
+    }
+
+    await message.reply_text(
+        "✅ ORDER VERIFIED\n\n"
+        f"Order: {order['order_number']}\n"
+        f"Product: {order['product_name']}\n"
+        f"Total: {order['currency']} "
+        f"{Decimal(str(order['total_amount'])):,.2f}\n\n"
+        "Now upload your payment receipt as a photo or PDF document.\n\n"
+        "Send /cancel to stop."
+    )
+
+    return RECEIPT_FILE
+
+
+async def receipt_file(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+    pool = _get_pool(context)
+
+    if message is None or user is None:
+        return ConversationHandler.END
+
+    if pool is None:
+        await message.reply_text(
+            "Database is unavailable. Please try again later."
+        )
+        return RECEIPT_FILE
+
+    receipt_data = context.user_data.get("receipt_upload", {})
+    order_number = receipt_data.get("order_number")
+
+    if not order_number:
+        await message.reply_text(
+            "Your receipt session has expired. Please start again with /receipt."
+        )
+        return ConversationHandler.END
+
+    file_id = None
+    file_unique_id = None
+    file_type = None
+    file_name = None
+    mime_type = None
+
+    if message.photo:
+        photo = message.photo[-1]
+        file_id = photo.file_id
+        file_unique_id = photo.file_unique_id
+        file_type = "photo"
+
+    elif message.document:
+        document = message.document
+
+        if document.mime_type != "application/pdf":
+            await message.reply_text(
+                "❌ Please upload a photo or a PDF file only."
+            )
+            return RECEIPT_FILE
+
+        file_id = document.file_id
+        file_unique_id = document.file_unique_id
+        file_type = "document"
+        file_name = document.file_name
+        mime_type = document.mime_type
+
+    else:
+        await message.reply_text(
+            "Please upload your receipt as a photo or PDF document."
+        )
+        return RECEIPT_FILE
+
+    try:
+        saved_receipt = await db.save_payment_receipt(
+            pool,
+            order_number=order_number,
+            telegram_id=user.id,
+            file_id=file_id,
+            file_unique_id=file_unique_id,
+            file_type=file_type,
+            file_name=file_name,
+            mime_type=mime_type,
+        )
+    except Exception:
+        logger.exception("Could not save payment receipt.")
+        await message.reply_text(
+            "❌ We couldn't save your receipt. Please try again."
+        )
+        return RECEIPT_FILE
+
+    if saved_receipt is None:
+        await message.reply_text(
+            "❌ This order is no longer awaiting payment. "
+            "Please contact support if you need assistance."
+        )
+        context.user_data.pop("receipt_upload", None)
+        return ConversationHandler.END
+
+    admin_ids = {
+        value.strip()
+        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+        if value.strip()
+    }
+
+    caption = (
+        "🧾 NEW PAYMENT RECEIPT\n\n"
+        f"Receipt ID: {saved_receipt['id']}\n"
+        f"Order: {order_number}\n"
+        f"Customer: {user.first_name or 'Unknown'}\n"
+        f"Username: @{user.username or 'Not set'}\n"
+        f"Telegram ID: {user.id}\n\n"
+        "Status: PENDING REVIEW\n\n"
+        f"After verifying payment, use:\n/approve {order_number}"
+    )
+
+    for admin_id in admin_ids:
+        try:
+            chat_id = int(admin_id)
+
+            if file_type == "photo":
+                await context.bot.send_photo(
+                    chat_id=chat_id,
+                    photo=file_id,
+                    caption=caption,
+                )
+            else:
+                await context.bot.send_document(
+                    chat_id=chat_id,
+                    document=file_id,
+                    caption=caption,
+                )
+
+        except Exception:
+            logger.exception(
+                "Could not send receipt notification to admin %s.",
+                admin_id,
+            )
+
+    if not admin_ids:
+        logger.warning(
+            "Receipt %s saved, but no admin IDs are configured.",
+            saved_receipt["id"],
+        )
+
+    await message.reply_text(
+        "✅ RECEIPT SUBMITTED SUCCESSFULLY!\n\n"
+        f"Order: {order_number}\n"
+        f"Receipt ID: {saved_receipt['id']}\n"
+        "Status: Awaiting Review\n\n"
+        "Our team will verify your payment and update your order.\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
+    )
+
+    context.user_data.pop("receipt_upload", None)
+
+    return ConversationHandler.END
+
+
+async def cancel_receipt_upload(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    context.user_data.pop("receipt_upload", None)
+
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "Your receipt submission has been cancelled."
+        )
+
+    return ConversationHandler.END
+
+
 
 # ---------------------------------------------------------------------------
 # Register handlers
