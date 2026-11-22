@@ -508,38 +508,188 @@ async def payment_methods(
         reply_markup=keyboard,
     )
 
+PAYMENT_SUPPORT_ORDER = "PAYMENT_SUPPORT_ORDER"
+PAYMENT_SUPPORT_ISSUE = "PAYMENT_SUPPORT_ISSUE"
+
+
 async def payment_support(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-) -> None:
-    del context
+) -> int:
     message = update.effective_message
 
     if message is None:
-        return
+        return ConversationHandler.END
 
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🎫 Contact NGFLUX Support",
-                url="https://t.me/Ngfluxstore",
-            )
-        ]
-    ])
+    pool = context.application.bot_data.get(DB_KEY)
+
+    if pool is None:
+        await message.reply_text(
+            "Payment support is temporarily unavailable. "
+            "Please try again later."
+        )
+        return ConversationHandler.END
+
+    context.user_data["payment_support"] = {}
 
     await message.reply_text(
         "🛟 NGFLUX STORE — PAYMENT SUPPORT\n\n"
-        "Having a problem with a payment or order?\n\n"
-        "Please contact our support team and provide:\n"
-        "1. Your order number.\n"
-        "2. A description of the problem.\n"
-        "3. Your Telegram username.\n"
-        "4. Your Telegram Stars transaction details, "
-        "if applicable.\n\n"
-        "Our team will review your request and assist you.\n\n"
-        "Thank you for choosing NGFLUX STORE! 💙",
-        reply_markup=keyboard,
+        "Let's create a support ticket for you.\n\n"
+        "Please enter your order number.\n"
+        "If you don't have one, type NONE.\n\n"
+        "Send /cancel to stop."
     )
+
+    return PAYMENT_SUPPORT_ORDER
+
+
+async def payment_support_order(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+
+    if message is None or not message.text:
+        return PAYMENT_SUPPORT_ORDER
+
+    order_number = message.text.strip()
+
+    if len(order_number) > 100:
+        await message.reply_text(
+            "That order number is too long. Please try again."
+        )
+        return PAYMENT_SUPPORT_ORDER
+
+    context.user_data["payment_support"]["order_number"] = order_number
+
+    await message.reply_text(
+        "Thank you!\n\n"
+        "Now describe the payment or order problem you are experiencing."
+    )
+
+    return PAYMENT_SUPPORT_ISSUE
+
+
+async def payment_support_issue(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    user = update.effective_user
+
+    if message is None or user is None or not message.text:
+        return PAYMENT_SUPPORT_ISSUE
+
+    issue = message.text.strip()
+
+    if len(issue) < 10:
+        await message.reply_text(
+            "Please provide a little more detail "
+            "(at least 10 characters)."
+        )
+        return PAYMENT_SUPPORT_ISSUE
+
+    if len(issue) > 3000:
+        await message.reply_text(
+            "Your description is too long. "
+            "Please keep it under 3,000 characters."
+        )
+        return PAYMENT_SUPPORT_ISSUE
+
+    pool = context.application.bot_data.get(DB_KEY)
+
+    if pool is None:
+        await message.reply_text(
+            "We couldn't save your ticket because the database "
+            "is temporarily unavailable. Please try again later."
+        )
+        return ConversationHandler.END
+
+    ticket_number = f"NGF-SUP-{secrets.token_hex(4).upper()}"
+    order_number = context.user_data["payment_support"].get(
+        "order_number", "NONE"
+    )
+
+    try:
+        await db.create_support_ticket(
+            pool,
+            ticket_number=ticket_number,
+            telegram_id=user.id,
+            username=user.username or "",
+            first_name=user.first_name or "",
+            order_number=order_number,
+            issue=issue,
+        )
+    except Exception:
+        logger.exception("Failed to save payment support ticket.")
+        await message.reply_text(
+            "Sorry, we couldn't save your ticket. "
+            "Please try again later."
+        )
+        return ConversationHandler.END
+
+    admin_ids = {
+        value.strip()
+        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+        if value.strip()
+    }
+
+    admin_message = (
+        "🎫 NEW NGFLUX SUPPORT TICKET\n\n"
+        f"Ticket: {ticket_number}\n"
+        f"Customer: {user.first_name or 'Unknown'}\n"
+        f"Username: @{user.username or 'Not set'}\n"
+        f"Telegram ID: {user.id}\n"
+        f"Order number: {order_number}\n\n"
+        f"Problem:\n{issue}\n\n"
+        "Status: OPEN"
+    )
+
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=int(admin_id),
+                text=admin_message,
+            )
+        except Exception:
+            logger.exception(
+                "Could not notify support admin %s.",
+                admin_id,
+            )
+
+    if not admin_ids:
+        logger.warning(
+            "Support ticket %s saved, but no admin IDs are configured.",
+            ticket_number,
+        )
+
+    await message.reply_text(
+        "✅ YOUR SUPPORT TICKET HAS BEEN CREATED!\n\n"
+        f"Ticket number: {ticket_number}\n"
+        f"Order number: {order_number}\n"
+        "Status: OPEN\n\n"
+        "Our support team has received your request "
+        "and will review it.\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
+    )
+
+    context.user_data.pop("payment_support", None)
+
+    return ConversationHandler.END
+
+
+async def cancel_payment_support(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    context.user_data.pop("payment_support", None)
+
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "Your support request has been cancelled."
+        )
+
+    return ConversationHandler.END
 
 
 
