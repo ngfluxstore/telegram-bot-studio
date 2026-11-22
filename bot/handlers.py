@@ -1354,10 +1354,7 @@ async def create_checkout_order(
             query.data.removeprefix("checkout:create:")
         )
     except ValueError:
-        await query.answer(
-            "Invalid product selection.",
-            show_alert=True,
-        )
+        await query.answer("Invalid product selection.", show_alert=True)
         return
 
     await query.answer("Creating your order...")
@@ -1369,19 +1366,11 @@ async def create_checkout_order(
             product_id=product_id,
             quantity=1,
         )
-
     except Exception:
-        logger.exception(
-            "Checkout order creation failed for Telegram user %s "
-            "and product %s",
-            user.id,
-            product_id,
-        )
-
+        logger.exception("Checkout order creation failed.")
         if query.message is not None:
             await query.message.reply_text(
-                "❌ We couldn't create your order.\n\n"
-                "Please try again or contact @Ngfluxstore."
+                "❌ We couldn't create your order. Please try again."
             )
         return
 
@@ -1390,6 +1379,36 @@ async def create_checkout_order(
     quantity = order["quantity"]
     total_amount = Decimal(str(order["total_amount"]))
     currency = order["currency"]
+
+    # Send the new order to the admins privately.
+    admin_ids = {
+        value.strip()
+        for value in os.getenv("ADMIN_TELEGRAM_IDS", "").split(",")
+        if value.strip()
+    }
+
+    admin_message = (
+        "🛒 NEW NGFLUX STORE ORDER\n\n"
+        f"Order: {order_number}\n"
+        f"Customer: {user.first_name or 'Unknown'}\n"
+        f"Username: @{user.username or 'Not set'}\n"
+        f"Telegram ID: {user.id}\n"
+        f"Product: {product_name}\n"
+        f"Quantity: {quantity}\n"
+        f"Total: {currency} {total_amount:,.2f}\n"
+        "Status: AWAITING PAYMENT\n\n"
+        "After verifying payment, approve with:\n"
+        f"/approve {order_number}"
+    )
+
+    for admin_id in admin_ids:
+        try:
+            await context.bot.send_message(
+                chat_id=int(admin_id),
+                text=admin_message,
+            )
+        except Exception:
+            logger.exception("Could not notify admin %s.", admin_id)
 
     confirmation = (
         "✅ ORDER CREATED SUCCESSFULLY!\n\n"
@@ -1415,12 +1434,7 @@ async def create_checkout_order(
             ]]),
         )
     except Exception:
-        logger.exception(
-            "Order %s was created, but the confirmation message "
-            "could not be edited",
-            order_number,
-        )
-
+        logger.exception("Could not edit order confirmation.")
         if query.message is not None:
             await query.message.reply_text(confirmation)
 
@@ -1429,7 +1443,7 @@ async def create_checkout_order(
 # Admin: list products
 # ---------------------------------------------------------------------------
 
-async def admin_products(
+async def approve_order_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -1446,37 +1460,69 @@ async def admin_products(
         await message.reply_text("Database is unavailable.")
         return
 
-    products = await db.list_products(
-        pool,
-        active_only=False,
-    )
+    if not context.args:
+        await message.reply_text("Usage:\n/approve ORDER_NUMBER")
+        return
 
-    if not products:
+    order_number = context.args[0].strip().upper()
+
+    try:
+        result = await db.approve_order(
+            pool,
+            order_number,
+            reviewed_by=update.effective_user.id,
+        )
+    except Exception:
+        logger.exception("Failed to approve order %s.", order_number)
+        await message.reply_text("❌ Could not approve this order.")
+        return
+
+    if result["result"] == "not_found":
+        await message.reply_text("❌ Order not found.")
+        return
+
+    if result["result"] == "already_paid":
         await message.reply_text(
-            "📦 No products have been added yet.\nUse /addproduct to add one."
+            f"ℹ️ Order {order_number} is already PAID."
         )
         return
 
-    lines = ["📦 NGFLUX STORE — PRODUCT MANAGEMENT\n"]
-
-    for product in products[:40]:
-        status = "🟢 Active" if product["active"] else "🔴 Inactive"
-
-        lines.append(
-            f"\nID: {product['id']}\n"
-            f"Name: {product['name']}\n"
-            f"Category: {_normalise_legacy_category(product['category'])}\n"
-            f"Country: {product.get('country') or '—'}\n"
-            f"Price: {_format_price(product)}\n"
-            f"Status: {status}"
+    if result["result"] == "invalid_status":
+        await message.reply_text(
+            f"⚠️ Cannot approve this order. "
+            f"Status: {result['order']['status']}."
         )
+        return
 
-    lines.append(
-        "\n\n/addproduct\n/editproduct ID\n/deleteproduct ID"
+    order = result["order"]
+
+    customer_text = (
+        "✅ PAYMENT CONFIRMED!\n\n"
+        f"Order: {order['order_number']}\n"
+        f"Product: {order['product_name']}\n"
+        f"Total: {order['currency']} "
+        f"{Decimal(str(order['total_amount'])):,.2f}\n\n"
+        "Your payment has been verified successfully. "
+        "Your order is now marked as PAID.\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
     )
 
-    await message.reply_text("\n".join(lines))
+    try:
+        await context.bot.send_message(
+            chat_id=order["telegram_id"],
+            text=customer_text,
+        )
+    except Exception:
+        logger.exception("Customer notification failed for %s.", order_number)
+        await message.reply_text(
+            f"✅ Order {order_number} marked PAID, "
+            "but customer notification failed."
+        )
+        return
 
+    await message.reply_text(
+        f"✅ Order {order_number} approved. Customer notified."
+    )
 
 # ---------------------------------------------------------------------------
 # Admin: add product
@@ -2266,12 +2312,13 @@ async def set_bot_commands(application: Application) -> None:
     await application.bot.set_my_commands(customer_commands)
 
     admin_commands = customer_commands + [
-        BotCommand("addproduct", "Add a product"),
-        BotCommand("products", "View all products"),
-        BotCommand("editproduct", "Edit a product"),
-        BotCommand("deleteproduct", "Deactivate a product"),
-        BotCommand("cancel", "Cancel an admin operation"),
-    ]
+    BotCommand("addproduct", "Add a product"),
+    BotCommand("products", "View all products"),
+    BotCommand("editproduct", "Edit a product"),
+    BotCommand("deleteproduct", "Deactivate a product"),
+    BotCommand("approve", "Approve a paid order"),
+    BotCommand("cancel", "Cancel an admin operation"),
+]
 
     admin_ids = {
         value.strip()
@@ -2297,6 +2344,7 @@ async def set_bot_commands(application: Application) -> None:
 # Register handlers
 # ---------------------------------------------------------------------------
 
+
 def register_handlers(application: Application) -> None:
     # Customer commands.
     application.add_handler(CommandHandler("start", start))
@@ -2310,6 +2358,15 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("resolve", admin_resolve_ticket))
     application.add_handler(CommandHandler("reply", admin_reply_ticket))
 
+    # Admin payment approval.
+    application.add_handler(
+        CommandHandler("approve", approve_order_command)
+    )
+
+    payment_support_conversation = ConversationHandler(
+        entry_points=[
+            CommandHandler("paysupport", payment_support)
+        ],
     payment_support_conversation = ConversationHandler(
         entry_points=[
             CommandHandler("paysupport", payment_support)
