@@ -569,6 +569,45 @@ async def mark_order_delivered(pool, order_id):
     return row is not None
 
 
+async def claim_manual_order(pool, order_number):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE orders
+            SET delivery_status = 'processing',
+                updated_at = now()
+            WHERE order_number = $1
+              AND status = 'paid'
+              AND delivery_mode = 'manual'
+              AND delivery_status = 'pending'
+            RETURNING id, order_number, telegram_id, product_name,
+                      currency, total_amount;
+            """,
+            order_number.strip().upper(),
+        )
+
+    return dict(row) if row else None
+
+
+async def reset_manual_order_delivery(pool, order_id):
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            """
+            UPDATE orders
+            SET delivery_status = 'pending',
+                updated_at = now()
+            WHERE id = $1
+              AND status = 'paid'
+              AND delivery_mode = 'manual'
+              AND delivery_status = 'processing';
+            """,
+            order_id,
+        )
+
+    return result.endswith("1")
+
+
+
 # --- Database shutdown ------------------------------------------------------
 
 async def close_pool(pool) -> None:
