@@ -1963,6 +1963,7 @@ async def add_price(
     return ADD_CURRENCY
 
 
+
 async def add_currency(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1980,49 +1981,17 @@ async def add_currency(
         )
         return ADD_CURRENCY
 
-    data = context.user_data.get("new_product", {})
-    data["currency"] = currency
+    context.user_data["new_product"]["currency"] = currency
 
-    pool = _get_pool(context)
+    await message.reply_text(
+        "Choose the delivery method for this product.\n\n"
+        "AUTOMATIC — Product details will be sent to customers "
+        "after payment approval.\n\n"
+        "MANUAL — An admin will deliver the product."
+    )
 
-    if pool is None:
-        await message.reply_text("Database is unavailable.")
-        context.user_data.pop("new_product", None)
-        return ConversationHandler.END
+    return ADD_DELIVERY_MODE
 
-    try:
-        product = await db.create_product(
-            pool,
-            name=data["name"],
-            description=data.get("description", ""),
-            category=data["category"],
-            price=data["price"],
-            currency=data["currency"],
-            country=data.get("country", ""),
-            features=data.get("features", ""),
-            compatibility=data.get("compatibility", ""),
-            limits=data.get("limits", ""),
-        )
-
-        await message.reply_text(
-            "✅ PRODUCT ADDED SUCCESSFULLY!\n\n"
-            f"Product ID: {product['id']}\n"
-            f"Name: {product['name']}\n"
-            f"Category: {product['category']}\n"
-            f"Country: {product.get('country') or '—'}\n"
-            f"Price: {_format_price(product)}\n\n"
-            "The product will appear in its matching store category."
-        )
-
-    except Exception:
-        logger.exception("Failed to create product")
-        await message.reply_text(
-            "❌ I couldn't save this product. Please try again."
-        )
-
-    context.user_data.pop("new_product", None)
-
-    return ConversationHandler.END
 
 
 # ---------------------------------------------------------------------------
