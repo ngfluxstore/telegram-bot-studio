@@ -1574,6 +1574,107 @@ async def approve_order_command(
         f"✅ Order {order_number} approved. Customer notified."
     )
 
+ 
+async def deliver_order_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+
+    if message is None:
+        return
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    if len(context.args) < 2:
+        await message.reply_text(
+            "Usage:\n/deliver ORDER_NUMBER PRODUCT_DETAILS"
+        )
+        return
+
+    order_number = context.args[0].strip().upper()
+    delivery_content = " ".join(context.args[1:]).strip()
+
+    customer_text = (
+        f"🎉 YOUR ORDER HAS BEEN DELIVERED!\n\n"
+        f"Order: {order_number}\n\n"
+        f"📦 PRODUCT DETAILS:\n\n"
+        f"{delivery_content}\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
+    )
+
+    if len(customer_text) > 4096:
+        await message.reply_text(
+            "❌ Delivery message is too long. "
+            "Please shorten the product details."
+        )
+        return
+
+    try:
+        order = await db.claim_manual_order(pool, order_number)
+    except Exception:
+        logger.exception("Failed to claim manual order %s.", order_number)
+        await message.reply_text("❌ Could not process this order.")
+        return
+
+    if not order:
+        await message.reply_text(
+            "❌ Order not found, not paid, not manual, "
+            "or already being delivered."
+        )
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=order["telegram_id"],
+            text=customer_text,
+        )
+    except Exception:
+        logger.exception("Manual delivery failed for %s.", order_number)
+
+        try:
+            await db.reset_manual_order_delivery(pool, order["id"])
+        except Exception:
+            logger.exception(
+                "Could not reset delivery status for %s.",
+                order_number,
+            )
+
+        await message.reply_text(
+            "❌ Could not send the product to the customer. "
+            "The order was reset for another attempt."
+        )
+        return
+
+    try:
+        delivered = await db.mark_order_delivered(pool, order["id"])
+    except Exception:
+        logger.exception(
+            "Could not mark manual order %s as delivered.",
+            order_number,
+        )
+        await message.reply_text(
+            "⚠️ Product was sent, but delivery status could not be updated."
+        )
+        return
+
+    if not delivered:
+        await message.reply_text(
+            "⚠️ Product was sent, but delivery status was not updated."
+        )
+        return
+
+    await message.reply_text(
+        f"✅ Order {order_number} delivered successfully."
+    )
+
+
 
 # ---------------------------------------------------------------------------
 # Admin: add product
