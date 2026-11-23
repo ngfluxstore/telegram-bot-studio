@@ -1675,7 +1675,8 @@ async def deliver_order_command(
     )
 
 
- async def order_status_command(
+ 
+async def order_status_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -1708,7 +1709,9 @@ async def deliver_order_command(
             "Failed to retrieve order status for %s.",
             order_number,
         )
-        await message.reply_text("❌ Could not retrieve your order status.")
+        await message.reply_text(
+            "❌ Could not retrieve your order status."
+        )
         return
 
     if not order:
