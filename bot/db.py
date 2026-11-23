@@ -916,24 +916,75 @@ def _product_to_dict(row):
     return data
 
 
+
 async def create_product(
-    pool, *, name, description, category, price, currency="USD",
-    country="", features="", compatibility="", limits="",
-    pricing_options=None
+    pool,
+    *,
+    name,
+    description,
+    category,
+    price,
+    currency="USD",
+    country="",
+    features="",
+    compatibility="",
+    limits="",
+    pricing_options=None,
+    delivery_mode="manual",
+    delivery_content="",
 ):
+    delivery_mode = str(delivery_mode).strip().lower()
+    delivery_content = str(delivery_content or "").strip()
+
+    if delivery_mode not in ("automatic", "manual"):
+        raise ValueError("Invalid delivery mode.")
+
+    if delivery_mode == "automatic" and not delivery_content:
+        raise ValueError(
+            "Automatic delivery requires delivery content."
+        )
+
+    if delivery_mode == "manual":
+        delivery_content = ""
+
+    if len(delivery_content) > 3500:
+        raise ValueError("Delivery content is too long.")
+
     row = await pool.fetchrow(
         """
-        INSERT INTO products
-        (name, description, category, price, currency, country,
-         features, compatibility, limits, pricing_options)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        INSERT INTO products (
+            name,
+            description,
+            category,
+            price,
+            currency,
+            country,
+            features,
+            compatibility,
+            limits,
+            pricing_options,
+            delivery_mode,
+            delivery_content
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING *;
         """,
-        name, description, category, Decimal(str(price)), currency,
-        country, features, compatibility, limits,
+        name,
+        description,
+        category,
+        Decimal(str(price)),
+        currency,
+        country,
+        features,
+        compatibility,
+        limits,
         json.dumps(pricing_options or []),
+        delivery_mode,
+        delivery_content,
     )
+
     return _product_to_dict(row)
+
 
 
 async def list_products(
