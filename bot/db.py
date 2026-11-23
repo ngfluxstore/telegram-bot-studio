@@ -1033,25 +1033,80 @@ async def get_product(pool, product_id):
     return _product_to_dict(row) if row else None
 
 
+
 async def update_product(
-    pool, product_id, *, name, description, category, price,
-    currency, active, country="", features="", compatibility="",
-    limits="", pricing_options=None
+    pool,
+    product_id,
+    *,
+    name,
+    description,
+    category,
+    price,
+    currency,
+    active,
+    country="",
+    features="",
+    compatibility="",
+    limits="",
+    pricing_options=None,
+    delivery_mode="manual",
+    delivery_content="",
 ):
+    delivery_mode = str(delivery_mode).strip().lower()
+    delivery_content = str(delivery_content or "").strip()
+
+    if delivery_mode not in ("automatic", "manual"):
+        raise ValueError("Invalid delivery mode.")
+
+    if delivery_mode == "automatic" and not delivery_content:
+        raise ValueError(
+            "Automatic delivery requires delivery content."
+        )
+
+    if delivery_mode == "manual":
+        delivery_content = ""
+
+    if len(delivery_content) > 3500:
+        raise ValueError("Delivery content is too long.")
+
     row = await pool.fetchrow(
         """
         UPDATE products SET
-            name=$2, description=$3, category=$4, price=$5,
-            currency=$6, active=$7, country=$8, features=$9,
-            compatibility=$10, limits=$11, pricing_options=$12,
+            name=$2,
+            description=$3,
+            category=$4,
+            price=$5,
+            currency=$6,
+            active=$7,
+            country=$8,
+            features=$9,
+            compatibility=$10,
+            limits=$11,
+            pricing_options=$12,
+            delivery_mode=$13,
+            delivery_content=$14,
             updated_at=now()
-        WHERE id=$1 RETURNING *;
+        WHERE id=$1
+        RETURNING *;
         """,
-        product_id, name, description, category, Decimal(str(price)),
-        currency, active, country, features, compatibility, limits,
+        product_id,
+        name,
+        description,
+        category,
+        Decimal(str(price)),
+        currency,
+        active,
+        country,
+        features,
+        compatibility,
+        limits,
         json.dumps(pricing_options or []),
+        delivery_mode,
+        delivery_content,
     )
+
     return _product_to_dict(row) if row else None
+
 
 
 async def deactivate_product(pool, product_id):
