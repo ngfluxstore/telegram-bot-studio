@@ -2156,13 +2156,15 @@ async def edit_product_start(
         return ConversationHandler.END
 
     context.user_data["edit_product"] = {
-        "id": product_id,
-        "country": product.get("country") or "",
-        "features": product.get("features") or "",
-        "compatibility": product.get("compatibility") or "",
-        "limits": product.get("limits") or "",
-        "pricing_options": product.get("pricing_options"),
-    }
+    "id": product_id,
+    "country": product.get("country") or "",
+    "features": product.get("features") or "",
+    "compatibility": product.get("compatibility") or "",
+    "limits": product.get("limits") or "",
+    "pricing_options": product.get("pricing_options"),
+    "delivery_mode": product.get("delivery_mode") or "manual",
+    "delivery_content": product.get("delivery_content") or "",
+}
 
     await message.reply_text(
         f"✏️ EDIT PRODUCT #{product_id}\n\n"
