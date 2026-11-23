@@ -2905,127 +2905,91 @@ application.add_handler(
     
        # Admin commands.
 
-    application.add_handler(
-        CommandHandler("deleteproduct", delete_product)
-    )
+    
+application.add_handler(
+    CommandHandler("deleteproduct", delete_product)
+)
 
-    add_product_conversation = ConversationHandler(
-        entry_points=[
-            CommandHandler("addproduct", add_product_start)
+add_product_conversation = ConversationHandler(
+    entry_points=[
+        CommandHandler("addproduct", add_product_start)
+    ],
+    states={
+        ADD_NAME: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_name,
+            )
         ],
-        states={
-            ADD_NAME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_name,
-                )
-            ],
-            ADD_DESCRIPTION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_description,
-                )
-            ],
-            ADD_CATEGORY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_category,
-                )
-            ],
-            ADD_COUNTRY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_country,
-                )
-            ],
-            ADD_FEATURES: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_features,
-                )
-            ],
-            ADD_COMPATIBILITY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_compatibility,
-                )
-            ],
-            ADD_LIMITS: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_limits,
-                )
-            ],
-            ADD_PRICE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_price,
-                )
-            ],
-            ADD_CURRENCY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    add_currency,
-                )
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_admin_action)
+        ADD_DESCRIPTION: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_description,
+            )
         ],
-        allow_reentry=True,
-    )
+        ADD_CATEGORY: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_category,
+            )
+        ],
+        ADD_COUNTRY: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_country,
+            )
+        ],
+        ADD_FEATURES: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_features,
+            )
+        ],
+        ADD_COMPATIBILITY: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_compatibility,
+            )
+        ],
+        ADD_LIMITS: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_limits,
+            )
+        ],
+        ADD_PRICE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_price,
+            )
+        ],
+        ADD_CURRENCY: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_currency,
+            )
+        ],
+        ADD_DELIVERY_MODE: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_delivery_mode,
+            )
+        ],
+        ADD_DELIVERY_CONTENT: [
+            MessageHandler(
+                filters.TEXT & ~filters.COMMAND,
+                add_delivery_content,
+            )
+        ],
+    },
+    fallbacks=[
+        CommandHandler("cancel", cancel_admin_action)
+    ],
+    allow_reentry=True,
+)
 
-    application.add_handler(add_product_conversation)
+application.add_handler(add_product_conversation)
 
-    edit_product_conversation = ConversationHandler(
-        entry_points=[
-            CommandHandler("editproduct", edit_product_start)
-        ],
-        states={
-            EDIT_NAME: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_name,
-                )
-            ],
-            EDIT_DESCRIPTION: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_description,
-                )
-            ],
-            EDIT_CATEGORY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_category,
-                )
-            ],
-            EDIT_PRICE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_price,
-                )
-            ],
-            EDIT_CURRENCY: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_currency,
-                )
-            ],
-            EDIT_ACTIVE: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    edit_active,
-                )
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_admin_action)
-        ],
-        allow_reentry=True,
-    )
-
-    application.add_handler(edit_product_conversation)
 
     # Catalogue navigation callbacks.
     application.add_handler(
