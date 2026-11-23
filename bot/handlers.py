@@ -2303,6 +2303,76 @@ async def edit_currency(
     return EDIT_ACTIVE
 
 
+
+# ---------------------------------------------------------------------------
+# Admin: save edited product
+# ---------------------------------------------------------------------------
+
+async def save_edited_product(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    data = context.user_data.get("edit_product", {})
+    pool = _get_pool(context)
+
+    if message is None:
+        return ConversationHandler.END
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        context.user_data.pop("edit_product", None)
+        return ConversationHandler.END
+
+    try:
+        product = await db.update_product(
+            pool,
+            data["id"],
+            name=data["name"],
+            description=data["description"],
+            category=data["category"],
+            price=data["price"],
+            currency=data["currency"],
+            active=data["active"],
+            country=data.get("country", ""),
+            features=data.get("features", ""),
+            compatibility=data.get("compatibility", ""),
+            limits=data.get("limits", ""),
+            pricing_options=data.get("pricing_options"),
+            delivery_mode=data["delivery_mode"],
+            delivery_content=data.get("delivery_content", ""),
+        )
+
+        if product is None:
+            await message.reply_text("Product not found.")
+        else:
+            status = "Active" if product["active"] else "Inactive"
+
+            await message.reply_text(
+                "✅ PRODUCT UPDATED!\n\n"
+                f"Product ID: {product['id']}\n"
+                f"Name: {product['name']}\n"
+                f"Category: {product['category']}\n"
+                f"Country: {product.get('country') or '—'}\n"
+                f"Price: {_format_price(product)}\n"
+                f"Status: {status}\n"
+                f"Delivery: {product['delivery_mode'].upper()}"
+            )
+
+    except Exception:
+        logger.exception("Failed to update product")
+        await message.reply_text(
+            "❌ I couldn't update this product. Please try again."
+        )
+
+    context.user_data.pop("edit_product", None)
+    return ConversationHandler.END
+
+
+# ---------------------------------------------------------------------------
+# Admin: edit product active status
+# ---------------------------------------------------------------------------
+
 async def edit_active(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2319,55 +2389,157 @@ async def edit_active(
         return EDIT_ACTIVE
 
     data = context.user_data.get("edit_product", {})
+    data["active"] = answer == "yes"
+
+    await message.reply_text(
+        "Choose the delivery method for this product.\n\n"
+        "AUTOMATIC — Send stored product details after payment approval.\n\n"
+        "MANUAL — An admin delivers the product."
+    )
+
+    return EDIT_DELIVERY_MODE
+
+
+# ---------------------------------------------------------------------------
+# Admin: edit product delivery mode
+# ---------------------------------------------------------------------------
+
+async def edit_delivery_mode(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+
+    if message is None or not message.text:
+        return EDIT_DELIVERY_MODE
+
+    mode = message.text.strip().lower()
+
+    if mode not in ("automatic", "manual"):
+        await message.reply_text(
+            "Please enter AUTOMATIC or MANUAL."
+        )
+        return EDIT_DELIVERY_MODE
+
+    data = context.user_data["edit_product"]
+    data["delivery_mode"] = mode
+
+    if mode == "manual":
+        data["delivery_content"] = ""
+        return await save_edited_product(update, context)
+
+    await message.reply_text(
+        "Enter the product details customers should receive "
+        "after payment approval.\n\n"
+        "You can enter account details, activation codes, "
+        "or a delivery link."
+    )
+
+    return EDIT_DELIVERY_CONTENT
+
+
+# ---------------------------------------------------------------------------
+# Admin: edit automatic delivery content
+# ---------------------------------------------------------------------------
+
+async def edit_delivery_content(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+
+    if message is None or not message.text:
+        return EDIT_DELIVERY_CONTENT
+
+    content = message.text.strip()
+
+    if not content:
+        await message.reply_text(
+            "Please enter the automatic delivery information."
+        )
+        return EDIT_DELIVERY_CONTENT
+
+    if len(content) > 3500:
+        await message.reply_text(
+            "Delivery information is too long. "
+            "Please keep it under 3,500 characters."
+        )
+        return EDIT_DELIVERY_CONTENT
+
+    context.user_data["edit_product"]["delivery_content"] = content
+
+    return await save_edited_product(update, context)
+
+
+# ---------------------------------------------------------------------------
+# Admin: delete product
+# ---------------------------------------------------------------------------
+
+async def delete_product(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+
+    if message is None:
+        return
+
+    if not context.args:
+        await message.reply_text("Usage: /deleteproduct ID")
+        return
+
+    try:
+        product_id = int(context.args[0])
+    except ValueError:
+        await message.reply_text("Please provide a valid product ID.")
+        return
+
     pool = _get_pool(context)
 
     if pool is None:
         await message.reply_text("Database is unavailable.")
-        context.user_data.pop("edit_product", None)
-        return ConversationHandler.END
+        return
 
     try:
-        product = await db.update_product(
-            pool,
-            data["id"],
-            name=data["name"],
-            description=data["description"],
-            category=data["category"],
-            price=data["price"],
-            currency=data["currency"],
-            active=(answer == "yes"),
-            country=data.get("country", ""),
-            features=data.get("features", ""),
-            compatibility=data.get("compatibility", ""),
-            limits=data.get("limits", ""),
-            pricing_options=data.get("pricing_options"),
-        )
+        success = await db.deactivate_product(pool, product_id)
 
-        if product is None:
-            await message.reply_text("Product not found.")
-
-        else:
-            status = "Active" if product["active"] else "Inactive"
-
+        if success:
             await message.reply_text(
-                "✅ PRODUCT UPDATED!\n\n"
-                f"Product ID: {product['id']}\n"
-                f"Name: {product['name']}\n"
-                f"Category: {product['category']}\n"
-                f"Country: {product.get('country') or '—'}\n"
-                f"Price: {_format_price(product)}\n"
-                f"Status: {status}"
+                f"✅ Product #{product_id} has been deactivated."
+            )
+        else:
+            await message.reply_text(
+                "Product not found or already inactive."
             )
 
     except Exception:
-        logger.exception("Failed to update product")
+        logger.exception("Failed to deactivate product")
         await message.reply_text(
-            "❌ I couldn't update this product. Please try again."
+            "❌ I couldn't deactivate this product."
         )
 
+
+# ---------------------------------------------------------------------------
+# Admin: cancel operation
+# ---------------------------------------------------------------------------
+
+async def cancel_admin_action(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+
+    context.user_data.pop("new_product", None)
     context.user_data.pop("edit_product", None)
 
+    if message is not None:
+        await message.reply_text("Admin operation cancelled.")
+
     return ConversationHandler.END
+
 
 
 async def delete_product(
