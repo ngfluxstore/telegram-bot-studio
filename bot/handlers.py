@@ -2777,9 +2777,10 @@ def register_handlers(application: Application) -> None:
 
     # Admin payment approval.
     application.add_handler(
-        CommandHandler("approve", approve_order_command)
-    )
-    application.add_handler(
+    CommandHandler("approve", approve_order_command)
+)
+
+application.add_handler(
     CommandHandler("deliver", deliver_order_command)
 )
     # Payment support conversation.
