@@ -1675,6 +1675,62 @@ async def deliver_order_command(
     )
 
 
+ async def order_status_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    message = update.effective_message
+    pool = _get_pool(context)
+
+    if message is None:
+        return
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    if not context.args:
+        await message.reply_text(
+            "Usage:\n/orderstatus ORDER_NUMBER"
+        )
+        return
+
+    order_number = context.args[0].strip().upper()
+
+    try:
+        order = await db.get_customer_order_status(
+            pool,
+            order_number,
+            update.effective_user.id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to retrieve order status for %s.",
+            order_number,
+        )
+        await message.reply_text("❌ Could not retrieve your order status.")
+        return
+
+    if not order:
+        await message.reply_text(
+            "❌ Order not found. Please check your order number."
+        )
+        return
+
+    delivery_status = order["delivery_status"].upper()
+
+    await message.reply_text(
+        "📦 NGFLUX STORE — ORDER STATUS\n\n"
+        f"Order: {order['order_number']}\n"
+        f"Product: {order['product_name']}\n"
+        f"Quantity: {order['quantity']}\n"
+        f"Total: {order['currency']} "
+        f"{Decimal(str(order['total_amount'])):,.2f}\n\n"
+        f"Payment: {order['status'].upper()}\n"
+        f"Delivery: {delivery_status}\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Admin: add product
