@@ -486,6 +486,7 @@ async def review_payment_receipt(
     return dict(row) if row else None
 
 
+
 async def approve_order(pool, order_number, reviewed_by):
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -493,6 +494,12 @@ async def approve_order(pool, order_number, reviewed_by):
                 """
                 UPDATE orders
                 SET status = 'paid',
+                    delivery_status = CASE
+                        WHEN delivery_mode = 'automatic'
+                             AND delivery_content <> ''
+                        THEN 'processing'
+                        ELSE 'pending'
+                    END,
                     updated_at = now()
                 WHERE order_number = $1
                   AND status = 'awaiting_payment'
@@ -541,6 +548,7 @@ async def approve_order(pool, order_number, reviewed_by):
                 "result": "approved",
                 "order": order,
             }
+
 
 
 # --- Database shutdown ------------------------------------------------------
