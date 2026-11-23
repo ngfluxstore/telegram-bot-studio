@@ -1445,6 +1445,7 @@ async def create_checkout_order(
 # Admin: list products
 # ---------------------------------------------------------------------------
 
+
 async def approve_order_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1498,16 +1499,32 @@ async def approve_order_command(
 
     order = result["order"]
 
-    customer_text = (
-        "✅ PAYMENT CONFIRMED!\n\n"
-        f"Order: {order['order_number']}\n"
-        f"Product: {order['product_name']}\n"
-        f"Total: {order['currency']} "
-        f"{Decimal(str(order['total_amount'])):,.2f}\n\n"
-        "Your payment has been verified successfully. "
-        "Your order is now marked as PAID.\n\n"
-        "Thank you for choosing NGFLUX STORE! 💙"
-    )
+    amount = Decimal(str(order["total_amount"]))
+
+    if (
+        order["delivery_mode"] == "automatic"
+        and order["delivery_status"] == "processing"
+        and order["delivery_content"]
+    ):
+        customer_text = (
+            "✅ PAYMENT CONFIRMED!\n\n"
+            f"Order: {order['order_number']}\n"
+            f"Product: {order['product_name']}\n"
+            f"Total: {order['currency']} {amount:,.2f}\n\n"
+            "📦 YOUR PRODUCT:\n\n"
+            f"{order['delivery_content']}\n\n"
+            "Thank you for choosing NGFLUX STORE! 💙"
+        )
+    else:
+        customer_text = (
+            "✅ PAYMENT CONFIRMED!\n\n"
+            f"Order: {order['order_number']}\n"
+            f"Product: {order['product_name']}\n"
+            f"Total: {order['currency']} {amount:,.2f}\n\n"
+            "⏳ Your payment has been verified successfully.\n"
+            "Your order is awaiting fulfilment by our team.\n\n"
+            "Thank you for choosing NGFLUX STORE! 💙"
+        )
 
     try:
         await context.bot.send_message(
@@ -1515,16 +1532,48 @@ async def approve_order_command(
             text=customer_text,
         )
     except Exception:
-        logger.exception("Customer notification failed for %s.", order_number)
+        logger.exception(
+            "Customer notification failed for %s.",
+            order_number,
+        )
         await message.reply_text(
-            f"✅ Order {order_number} marked PAID, "
+            f"⚠️ Order {order_number} is PAID, "
             "but customer notification failed."
         )
         return
 
+    if (
+        order["delivery_mode"] == "automatic"
+        and order["delivery_status"] == "processing"
+        and order["delivery_content"]
+    ):
+        try:
+            delivered = await db.mark_order_delivered(
+                pool,
+                order["id"],
+            )
+        except Exception:
+            logger.exception(
+                "Failed to mark order %s as delivered.",
+                order_number,
+            )
+            await message.reply_text(
+                f"⚠️ Product message sent, but delivery status "
+                f"could not be updated for {order_number}."
+            )
+            return
+
+        if not delivered:
+            await message.reply_text(
+                f"⚠️ Product message sent, but delivery status "
+                f"was not updated for {order_number}."
+            )
+            return
+
     await message.reply_text(
         f"✅ Order {order_number} approved. Customer notified."
     )
+
 
 # ---------------------------------------------------------------------------
 # Admin: add product
