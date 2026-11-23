@@ -607,6 +607,31 @@ async def reset_manual_order_delivery(pool, order_id):
     return result.endswith("1")
 
 
+async def get_customer_order_status(pool, order_number, telegram_id):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT
+                order_number,
+                product_name,
+                quantity,
+                total_amount,
+                currency,
+                status,
+                delivery_status,
+                created_at,
+                delivered_at
+            FROM orders
+            WHERE order_number = $1
+              AND telegram_id = $2;
+            """,
+            order_number.strip().upper(),
+            telegram_id,
+        )
+
+    return dict(row) if row else None
+
+
 
 # --- Database shutdown ------------------------------------------------------
 
