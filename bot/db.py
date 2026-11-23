@@ -550,6 +550,24 @@ async def approve_order(pool, order_number, reviewed_by):
             }
 
 
+async def mark_order_delivered(pool, order_id):
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            UPDATE orders
+            SET delivery_status = 'delivered',
+                delivered_at = now(),
+                updated_at = now()
+            WHERE id = $1
+              AND status = 'paid'
+              AND delivery_status = 'processing'
+            RETURNING id;
+            """,
+            order_id,
+        )
+
+    return row is not None
+
 
 # --- Database shutdown ------------------------------------------------------
 
