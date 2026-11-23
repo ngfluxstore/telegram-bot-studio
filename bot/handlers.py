@@ -2839,6 +2839,10 @@ def register_handlers(application: Application) -> None:
 application.add_handler(
     CommandHandler("deliver", deliver_order_command)
 )
+
+application.add_handler(
+    CommandHandler("orderstatus", order_status_command)
+)
     # Payment support conversation.
     payment_support_conversation = ConversationHandler(
         entry_points=[
