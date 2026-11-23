@@ -1964,6 +1964,7 @@ async def add_price(
 
 
 
+
 async def add_currency(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1993,6 +1994,126 @@ async def add_currency(
     return ADD_DELIVERY_MODE
 
 
+# ---------------------------------------------------------------------------
+# Admin: save new product
+# ---------------------------------------------------------------------------
+
+async def save_new_product(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+    data = context.user_data.get("new_product", {})
+    pool = _get_pool(context)
+
+    if message is None:
+        return ConversationHandler.END
+
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        context.user_data.pop("new_product", None)
+        return ConversationHandler.END
+
+    try:
+        product = await db.create_product(
+            pool,
+            name=data["name"],
+            description=data.get("description", ""),
+            category=data["category"],
+            price=data["price"],
+            currency=data["currency"],
+            country=data.get("country", ""),
+            features=data.get("features", ""),
+            compatibility=data.get("compatibility", ""),
+            limits=data.get("limits", ""),
+            delivery_mode=data["delivery_mode"],
+            delivery_content=data.get("delivery_content", ""),
+        )
+
+        await message.reply_text(
+            "✅ PRODUCT ADDED SUCCESSFULLY!\n\n"
+            f"Product ID: {product['id']}\n"
+            f"Name: {product['name']}\n"
+            f"Category: {product['category']}\n"
+            f"Price: {_format_price(product)}\n"
+            f"Delivery: {data['delivery_mode'].upper()}\n\n"
+            "The product will appear in its matching store category."
+        )
+
+    except Exception:
+        logger.exception("Failed to create product")
+        await message.reply_text(
+            "❌ I couldn't save this product. Please try again."
+        )
+
+    context.user_data.pop("new_product", None)
+    return ConversationHandler.END
+
+
+async def add_delivery_mode(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+
+    if message is None or not message.text:
+        return ADD_DELIVERY_MODE
+
+    mode = message.text.strip().lower()
+
+    if mode not in ("automatic", "manual"):
+        await message.reply_text(
+            "Please enter either:\n"
+            "automatic\n"
+            "or\n"
+            "manual"
+        )
+        return ADD_DELIVERY_MODE
+
+    context.user_data["new_product"]["delivery_mode"] = mode
+
+    if mode == "manual":
+        context.user_data["new_product"]["delivery_content"] = ""
+        return await save_new_product(update, context)
+
+    await message.reply_text(
+        "Enter the product details customers should receive "
+        "after their payment is approved.\n\n"
+        "This can be an activation code, account details, "
+        "or a delivery link."
+    )
+
+    return ADD_DELIVERY_CONTENT
+
+
+async def add_delivery_content(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    message = update.effective_message
+
+    if message is None or not message.text:
+        return ADD_DELIVERY_CONTENT
+
+    content = message.text.strip()
+
+    if not content:
+        await message.reply_text(
+            "Please enter the automatic delivery information."
+        )
+        return ADD_DELIVERY_CONTENT
+
+    if len(content) > 3500:
+        await message.reply_text(
+            "The delivery information is too long. "
+            "Please keep it under 3,500 characters."
+        )
+        return ADD_DELIVERY_CONTENT
+
+    context.user_data["new_product"]["delivery_content"] = content
+
+    return await save_new_product(update, context)
+    
 
 # ---------------------------------------------------------------------------
 # Admin: edit product
