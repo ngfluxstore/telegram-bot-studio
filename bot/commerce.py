@@ -5,28 +5,22 @@ import secrets
 from decimal import Decimal, InvalidOperation
 
 
-async def create_order(pool, *, telegram_id, product_id, quantity=1):
-    """Create an order using the current product price."""
-
-    try:
-        quantity = int(quantity)
-    except (TypeError, ValueError):
-        raise ValueError("Invalid quantity.")
-
-    if quantity < 1:
-        raise ValueError("Quantity must be at least 1.")
-
-    async with pool.acquire() as conn:
-        async with conn.transaction():
-            product = await conn.fetchrow(
-                """
-                SELECT id, name, price, currency, active
-                FROM products
-                WHERE id = $1
-                FOR SHARE;
-                """,
-                product_id,
-            )
+product = await conn.fetchrow(
+    """
+    SELECT
+        id,
+        name,
+        price,
+        currency,
+        active,
+        delivery_mode,
+        delivery_content
+    FROM products
+    WHERE id = $1
+    FOR SHARE;
+    """,
+    product_id,
+)
 
             if not product or not product["active"]:
                 raise ValueError("This product is unavailable.")
