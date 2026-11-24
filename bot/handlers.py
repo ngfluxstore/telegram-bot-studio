@@ -3340,66 +3340,66 @@ application.add_handler(add_product_conversation)
 
 
 
-edit_product_conversation = ConversationHandler(
-    entry_points=[
-        CommandHandler("editproduct", edit_product_start)
-    ],
-    states={
-        EDIT_NAME: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_name,
-            )
+    # Edit Product conversation.
+    edit_product_conversation = ConversationHandler(
+        entry_points=[
+            CommandHandler("editproduct", edit_product_start)
         ],
-        EDIT_DESCRIPTION: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_description,
-            )
+        states={
+            EDIT_NAME: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_name,
+                )
+            ],
+            EDIT_DESCRIPTION: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_description,
+                )
+            ],
+            EDIT_CATEGORY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_category,
+                )
+            ],
+            EDIT_PRICE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_price,
+                )
+            ],
+            EDIT_CURRENCY: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_currency,
+                )
+            ],
+            EDIT_ACTIVE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_active,
+                )
+            ],
+            EDIT_DELIVERY_MODE: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_delivery_mode,
+                )
+            ],
+            EDIT_DELIVERY_CONTENT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_delivery_content,
+                )
+            ],
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_admin_action)
         ],
-        EDIT_CATEGORY: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_category,
-            )
-        ],
-        EDIT_PRICE: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_price,
-            )
-        ],
-        EDIT_CURRENCY: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_currency,
-            )
-        ],
-        
-    EDIT_ACTIVE: [
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            edit_active,
-        )
-    ],
-    EDIT_DELIVERY_MODE: [
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            edit_delivery_mode,
-        )
-    ],
-    EDIT_DELIVERY_CONTENT: [
-        MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
-            edit_delivery_content,
-        )
-    ],
-},
-fallbacks=[
-    CommandHandler("cancel", cancel_admin_action)
-],
-allow_reentry=True,
-)
+        allow_reentry=True,
+    )
 
     application.add_handler(edit_product_conversation)
 
