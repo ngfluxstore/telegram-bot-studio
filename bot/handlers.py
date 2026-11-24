@@ -3267,34 +3267,33 @@ edit_product_conversation = ConversationHandler(
                 edit_currency,
             )
         ],
-        EDIT_ACTIVE: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_active,
-            )
-        ],
-        EDIT_DELIVERY_MODE: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_delivery_mode,
-            )
-        ],
-        EDIT_DELIVERY_CONTENT: [
-            MessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                edit_delivery_content,
-            )
-        ],
-    },
-    fallbacks=[
-        CommandHandler("cancel", cancel_admin_action)
+        
+    EDIT_ACTIVE: [
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            edit_active,
+        )
     ],
-    allow_reentry=True,
+    EDIT_DELIVERY_MODE: [
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            edit_delivery_mode,
+        )
+    ],
+    EDIT_DELIVERY_CONTENT: [
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            edit_delivery_content,
+        )
+    ],
+},
+fallbacks=[
+    CommandHandler("cancel", cancel_admin_action)
+],
+allow_reentry=True,
 )
 
-application.add_handler(edit_product_conversation)
-
-
+    application.add_handler(edit_product_conversation)
 
     # Catalogue navigation callbacks.
     application.add_handler(
@@ -3325,6 +3324,7 @@ application.add_handler(edit_product_conversation)
             pattern=r"^checkout:create:\d+$",
         )
     )
+
 
     # Panel-managed command buttons.
     application.add_handler(
