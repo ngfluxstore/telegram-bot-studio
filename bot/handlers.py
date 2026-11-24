@@ -3079,11 +3079,10 @@ async def cancel_receipt_upload(
 
 
 
+
 # ---------------------------------------------------------------------------
 # Register handlers
 # ---------------------------------------------------------------------------
-
-
 
 def register_handlers(application: Application) -> None:
     # Customer commands.
@@ -3098,18 +3097,17 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("resolve", admin_resolve_ticket))
     application.add_handler(CommandHandler("reply", admin_reply_ticket))
 
-    # Admin payment approval.
+    # Admin payment approval and delivery.
     application.add_handler(
-    CommandHandler("approve", approve_order_command)
-)
+        CommandHandler("approve", approve_order_command)
+    )
+    application.add_handler(
+        CommandHandler("deliver", deliver_order_command)
+    )
+    application.add_handler(
+        CommandHandler("orderstatus", order_status_command)
+    )
 
-application.add_handler(
-    CommandHandler("deliver", deliver_order_command)
-)
-
-application.add_handler(
-    CommandHandler("orderstatus", order_status_command)
-)
     # Payment support conversation.
     payment_support_conversation = ConversationHandler(
         entry_points=[
@@ -3137,32 +3135,6 @@ application.add_handler(
 
     application.add_handler(payment_support_conversation)
 
-    # Customer payment receipt conversation.
-    receipt_conversation = ConversationHandler(
-        entry_points=[
-            CommandHandler("receipt", receipt_start)
-        ],
-        states={
-            RECEIPT_ORDER: [
-                MessageHandler(
-                    filters.TEXT & ~filters.COMMAND,
-                    receipt_order,
-                )
-            ],
-            RECEIPT_FILE: [
-                MessageHandler(
-                    filters.PHOTO | filters.Document.PDF,
-                    receipt_file,
-                )
-            ],
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel_receipt_upload)
-        ],
-        allow_reentry=True,
-    )
-
-    application.add_handler(receipt_conversation)
 
     # Other customer commands.
     application.add_handler(CommandHandler("support", customer_support))
