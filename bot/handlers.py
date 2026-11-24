@@ -3338,9 +3338,7 @@ add_product_conversation = ConversationHandler(
 
 application.add_handler(add_product_conversation)
 
-
-
-    # Edit Product conversation.
+# Edit Product conversation.
     edit_product_conversation = ConversationHandler(
         entry_points=[
             CommandHandler("editproduct", edit_product_start)
