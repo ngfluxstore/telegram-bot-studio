@@ -1120,6 +1120,523 @@ async def deactivate_product(pool, product_id):
     return result.endswith("1")
 
 
+# --- Product inventory -------------------------------------------------------
+
+_INVENTORY_ITEM_TYPES = frozenset({"code", "link", "account"})
+_INVENTORY_STATUSES = frozenset(
+    {"available", "allocated", "delivered", "removed"}
+)
+
+
+def _mask_inventory_payload(item_type, payload):
+    """Return a safe label for admin lists. Never expose full secrets."""
+    text = (payload or "").strip()
+    if not text:
+        return "(empty)"
+    if item_type == "account":
+        return "(account details hidden)"
+    if len(text) <= 4:
+        return "****"
+    return text[:4] + "…" + ("*" * min(8, max(0, len(text) - 4)))
+
+
+def _inventory_public_row(row):
+    """Admin-safe inventory row (no full payload)."""
+    data = dict(row)
+    payload = data.pop("payload", None)
+    data["payload_preview"] = _mask_inventory_payload(
+        data.get("item_type"), payload
+    )
+    return data
+
+
+def _inventory_delivery_row(row):
+    """Row used only for customer delivery / redelivery (includes payload)."""
+    return dict(row)
+
+
+async def add_inventory_items(
+    pool,
+    *,
+    product_id,
+    item_type,
+    payloads,
+    created_by="",
+    notes="",
+):
+    """
+    Bulk-insert inventory rows.
+
+    payloads: iterable of non-empty strings (one code, link, or account block each).
+    Returns the number of rows inserted.
+    """
+    item_type = str(item_type or "").strip().lower()
+    if item_type not in _INVENTORY_ITEM_TYPES:
+        raise ValueError("item_type must be code, link, or account.")
+
+    cleaned = []
+    for raw in payloads:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if len(text) > 8000:
+            raise ValueError(
+                "One inventory item is too long (max 8000 characters)."
+            )
+        cleaned.append(text)
+
+    if not cleaned:
+        raise ValueError("No valid inventory items to add.")
+
+    product = await pool.fetchrow(
+        "SELECT id FROM products WHERE id = $1;",
+        product_id,
+    )
+    if not product:
+        raise ValueError("Product not found.")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            rows = await conn.fetch(
+                """
+                INSERT INTO product_inventory (
+                    product_id,
+                    item_type,
+                    payload,
+                    status,
+                    created_by,
+                    notes
+                )
+                SELECT
+                    $1,
+                    $2,
+                    x.payload,
+                    'available',
+                    $3,
+                    $4
+                FROM unnest($5::text[]) AS x(payload)
+                RETURNING id;
+                """,
+                product_id,
+                item_type,
+                str(created_by or ""),
+                str(notes or ""),
+                cleaned,
+            )
+
+    return len(rows)
+
+
+async def count_available_stock(pool, product_id):
+    """Return how many available items a product has."""
+    value = await pool.fetchval(
+        """
+        SELECT count(*)::int
+        FROM product_inventory
+        WHERE product_id = $1
+          AND status = 'available';
+        """,
+        product_id,
+    )
+    return int(value or 0)
+
+
+async def get_stock_summary(pool, product_id=None):
+    """
+    Stock counts by product.
+
+    If product_id is set, only that product is returned.
+    """
+    if product_id is not None:
+        rows = await pool.fetch(
+            """
+            SELECT
+                p.id AS product_id,
+                p.name AS product_name,
+                p.active,
+                count(*) FILTER (
+                    WHERE i.status = 'available'
+                )::int AS available,
+                count(*) FILTER (
+                    WHERE i.status = 'allocated'
+                )::int AS allocated,
+                count(*) FILTER (
+                    WHERE i.status = 'delivered'
+                )::int AS delivered,
+                count(*) FILTER (
+                    WHERE i.status = 'removed'
+                )::int AS removed
+            FROM products p
+            LEFT JOIN product_inventory i ON i.product_id = p.id
+            WHERE p.id = $1
+            GROUP BY p.id, p.name, p.active;
+            """,
+            product_id,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT
+                p.id AS product_id,
+                p.name AS product_name,
+                p.active,
+                count(*) FILTER (
+                    WHERE i.status = 'available'
+                )::int AS available,
+                count(*) FILTER (
+                    WHERE i.status = 'allocated'
+                )::int AS allocated,
+                count(*) FILTER (
+                    WHERE i.status = 'delivered'
+                )::int AS delivered,
+                count(*) FILTER (
+                    WHERE i.status = 'removed'
+                )::int AS removed
+            FROM products p
+            LEFT JOIN product_inventory i ON i.product_id = p.id
+            GROUP BY p.id, p.name, p.active
+            HAVING count(i.id) > 0
+            ORDER BY p.name;
+            """
+        )
+
+    return [dict(row) for row in rows]
+
+
+async def list_inventory_records(
+    pool,
+    *,
+    product_id=None,
+    status=None,
+    limit=50,
+):
+    """
+    List inventory rows for admins without exposing full payloads.
+    """
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 200))
+
+    conditions = []
+    args = []
+
+    if product_id is not None:
+        args.append(product_id)
+        conditions.append(f"i.product_id = ${len(args)}")
+
+    if status is not None:
+        status = str(status).strip().lower()
+        if status not in _INVENTORY_STATUSES:
+            raise ValueError("Invalid inventory status.")
+        args.append(status)
+        conditions.append(f"i.status = ${len(args)}")
+
+    args.append(limit)
+    limit_placeholder = f"${len(args)}"
+
+    where_sql = ""
+    if conditions:
+        where_sql = "WHERE " + " AND ".join(conditions)
+
+    rows = await pool.fetch(
+        f"""
+        SELECT
+            i.id,
+            i.product_id,
+            p.name AS product_name,
+            i.item_type,
+            i.payload,
+            i.status,
+            i.order_id,
+            i.allocated_at,
+            i.delivered_at,
+            i.created_at,
+            i.created_by,
+            i.notes
+        FROM product_inventory i
+        JOIN products p ON p.id = i.product_id
+        {where_sql}
+        ORDER BY i.id DESC
+        LIMIT {limit_placeholder};
+        """,
+        *args,
+    )
+    return [_inventory_public_row(row) for row in rows]
+
+
+async def remove_available_inventory(pool, inventory_ids):
+    """
+    Soft-remove available inventory rows by id.
+
+    Only rows still in status 'available' are removed.
+    Returns the number of rows removed.
+    """
+    ids = []
+    for value in inventory_ids:
+        try:
+            ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+
+    if not ids:
+        raise ValueError("No valid inventory IDs provided.")
+
+    result = await pool.execute(
+        """
+        UPDATE product_inventory
+        SET status = 'removed'
+        WHERE id = ANY($1::bigint[])
+          AND status = 'available';
+        """,
+        ids,
+    )
+    return int(result.rsplit(" ", 1)[-1])
+
+
+async def get_low_stock_products(pool, threshold=5):
+    """Products that have inventory rows and available count <= threshold."""
+    try:
+        threshold = int(threshold)
+    except (TypeError, ValueError):
+        threshold = 5
+    threshold = max(0, threshold)
+
+    rows = await pool.fetch(
+        """
+        SELECT
+            p.id AS product_id,
+            p.name AS product_name,
+            p.active,
+            count(*) FILTER (
+                WHERE i.status = 'available'
+            )::int AS available
+        FROM products p
+        JOIN product_inventory i ON i.product_id = p.id
+        GROUP BY p.id, p.name, p.active
+        HAVING count(*) FILTER (
+            WHERE i.status = 'available'
+        ) <= $1
+        ORDER BY available ASC, p.name;
+        """,
+        threshold,
+    )
+    return [dict(row) for row in rows]
+
+
+async def get_order_inventory_items(pool, order_id, *, include_payload=False):
+    """
+    Inventory rows already linked to an order.
+
+    include_payload=True is only for delivery / redelivery paths.
+    """
+    rows = await pool.fetch(
+        """
+        SELECT
+            id,
+            product_id,
+            item_type,
+            payload,
+            status,
+            order_id,
+            allocated_at,
+            delivered_at,
+            created_at
+        FROM product_inventory
+        WHERE order_id = $1
+          AND status IN ('allocated', 'delivered')
+        ORDER BY id;
+        """,
+        order_id,
+    )
+    if include_payload:
+        return [_inventory_delivery_row(row) for row in rows]
+    return [_inventory_public_row(row) for row in rows]
+
+
+async def allocate_inventory_for_order(
+    pool,
+    *,
+    order_id,
+    product_id,
+    quantity,
+):
+    """
+    Allocate exactly `quantity` available items to an order.
+
+    Uses FOR UPDATE SKIP LOCKED so concurrent approvals cannot take the same row.
+    Never partially allocates: if stock is short, nothing is taken.
+
+    If this order already has allocations, returns them (idempotent).
+
+    Returns a dict:
+      result: allocated | already_allocated | insufficient_stock | invalid_order
+      items: list of rows including payload when allocated
+      available: int when insufficient_stock
+    """
+    try:
+        quantity = int(quantity)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid quantity.")
+
+    if quantity < 1:
+        raise ValueError("Quantity must be at least 1.")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            order = await conn.fetchrow(
+                """
+                SELECT id, product_id, quantity, status
+                FROM orders
+                WHERE id = $1
+                FOR UPDATE;
+                """,
+                order_id,
+            )
+
+            if not order:
+                return {"result": "invalid_order", "items": []}
+
+            if order["status"] != "paid":
+                return {"result": "invalid_order", "items": []}
+
+            if int(order["product_id"]) != int(product_id):
+                return {"result": "invalid_order", "items": []}
+
+            existing = await conn.fetch(
+                """
+                SELECT
+                    id,
+                    product_id,
+                    item_type,
+                    payload,
+                    status,
+                    order_id,
+                    allocated_at,
+                    delivered_at,
+                    created_at
+                FROM product_inventory
+                WHERE order_id = $1
+                  AND status IN ('allocated', 'delivered')
+                ORDER BY id
+                FOR UPDATE;
+                """,
+                order_id,
+            )
+
+            if existing:
+                return {
+                    "result": "already_allocated",
+                    "items": [
+                        _inventory_delivery_row(row) for row in existing
+                    ],
+                }
+
+            locked = await conn.fetch(
+                """
+                SELECT id
+                FROM product_inventory
+                WHERE product_id = $1
+                  AND status = 'available'
+                ORDER BY id
+                FOR UPDATE SKIP LOCKED
+                LIMIT $2;
+                """,
+                product_id,
+                quantity,
+            )
+
+            if len(locked) < quantity:
+                return {
+                    "result": "insufficient_stock",
+                    "items": [],
+                    "available": len(locked),
+                }
+
+            ids = [row["id"] for row in locked]
+
+            updated = await conn.fetch(
+                """
+                UPDATE product_inventory
+                SET
+                    status = 'allocated',
+                    order_id = $1,
+                    allocated_at = now()
+                WHERE id = ANY($2::bigint[])
+                  AND status = 'available'
+                RETURNING
+                    id,
+                    product_id,
+                    item_type,
+                    payload,
+                    status,
+                    order_id,
+                    allocated_at,
+                    delivered_at,
+                    created_at;
+                """,
+                order_id,
+                ids,
+            )
+
+            if len(updated) < quantity:
+                # Should not happen under the row locks; fail closed.
+                raise RuntimeError(
+                    "Inventory allocation race detected; transaction aborted."
+                )
+
+            return {
+                "result": "allocated",
+                "items": [
+                    _inventory_delivery_row(row) for row in updated
+                ],
+            }
+
+
+async def mark_inventory_delivered_for_order(pool, order_id):
+    """
+    Mark allocated inventory for an order as delivered.
+
+    Safe to call more than once.
+    Returns the number of rows moved to delivered.
+    """
+    result = await pool.execute(
+        """
+        UPDATE product_inventory
+        SET
+            status = 'delivered',
+            delivered_at = COALESCE(delivered_at, now())
+        WHERE order_id = $1
+          AND status = 'allocated';
+        """,
+        order_id,
+    )
+    return int(result.rsplit(" ", 1)[-1])
+
+
+async def mark_order_delivery_failed(pool, order_id):
+    """
+    Mark a paid order delivery as failed without releasing inventory.
+
+    Allocated inventory stays linked so redelivery can reuse the same items.
+    """
+    row = await pool.fetchrow(
+        """
+        UPDATE orders
+        SET
+            delivery_status = 'failed',
+            updated_at = now()
+        WHERE id = $1
+          AND status = 'paid'
+          AND delivery_status IN ('processing', 'failed', 'pending')
+        RETURNING id;
+        """,
+        order_id,
+    )
+    return row is not None
+
+
 # --- Wallet catalogue: 22 products ------------------------------------------
 
 WALLET_CATALOG = [
