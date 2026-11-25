@@ -56,10 +56,7 @@ async def create_order(pool, *, telegram_id, product_id, quantity=1):
             delivery_mode = product["delivery_mode"] or "manual"
             delivery_content = product["delivery_content"] or ""
 
-            if delivery_mode == "automatic" and not delivery_content.strip():
-                raise ValueError(
-                    "Automatic delivery is not configured for this product."
-                )
+            
 
             order = await conn.fetchrow(
                 """
