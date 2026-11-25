@@ -1397,6 +1397,398 @@ async def deliver_order_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     await message.reply_text(f"✅ Order {order_number} delivered successfully.")
 
+# ---------------------------------------------------------------------------
+# Admin inventory commands
+# ---------------------------------------------------------------------------
+
+async def addstock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+    if message is None:
+        return
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    text = (message.text or "").strip()
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        await message.reply_text(
+            "Usage:\n"
+            "/addstock PRODUCT_ID code|link|account\n"
+            "ITEM1\n"
+            "ITEM2\n"
+            "ITEM3"
+        )
+        return
+
+    # First line is "/addstock PRODUCT_ID type" (possibly with more on later lines)
+    first_parts = lines[0].split()
+    # first_parts[0] is the command itself
+    if len(first_parts) < 3:
+        await message.reply_text(
+            "Usage:\n"
+            "/addstock PRODUCT_ID code|link|account\n"
+            "ITEM1\n"
+            "ITEM2"
+        )
+        return
+
+    try:
+        product_id = int(first_parts[1])
+    except ValueError:
+        await message.reply_text("Product ID must be a number.")
+        return
+
+    item_type = first_parts[2].strip().lower()
+    if item_type not in ("code", "link", "account"):
+        await message.reply_text("item_type must be: code, link, or account")
+        return
+
+    payloads = []
+    # Anything after type on the first line is ignored as payload; use following lines
+    if len(first_parts) > 3:
+        # Allow: /addstock 12 code ABC DEF on one line as separate items
+        payloads.extend(first_parts[3:])
+    payloads.extend(lines[1:])
+
+    if not payloads:
+        await message.reply_text(
+            "Add at least one inventory item on the following lines."
+        )
+        return
+
+    try:
+        product = await db.get_product(pool, product_id)
+    except Exception:
+        logger.exception("Failed to load product %s for addstock.", product_id)
+        await message.reply_text("❌ Could not load that product.")
+        return
+
+    if not product:
+        await message.reply_text("❌ Product not found.")
+        return
+
+    try:
+        added = await db.add_inventory_items(
+            pool,
+            product_id=product_id,
+            item_type=item_type,
+            payloads=payloads,
+            created_by=str(update.effective_user.id),
+        )
+    except ValueError as exc:
+        await message.reply_text(f"❌ {exc}")
+        return
+    except Exception:
+        logger.exception("Failed to add stock for product %s.", product_id)
+        await message.reply_text("❌ Could not add inventory.")
+        return
+
+    available = await db.count_available_stock(pool, product_id)
+    await message.reply_text(
+        f"✅ Added {added} {item_type} item(s) to product #{product_id} "
+        f"({product['name']}).\n"
+        f"Available stock now: {available}"
+    )
+
+
+async def stock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+    if message is None:
+        return
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    product_id = None
+    if context.args:
+        try:
+            product_id = int(context.args[0])
+        except ValueError:
+            await message.reply_text("Usage:\n/stock\n/stock PRODUCT_ID")
+            return
+
+    try:
+        rows = await db.get_stock_summary(pool, product_id=product_id)
+    except Exception:
+        logger.exception("Failed to load stock summary.")
+        await message.reply_text("❌ Could not load stock.")
+        return
+
+    if not rows:
+        await message.reply_text("No inventory found.")
+        return
+
+    lines = ["📦 STOCK SUMMARY\n"]
+    for row in rows:
+        lines.append(
+            f"#{row['product_id']} {row['product_name']}\n"
+            f"  available: {row['available']} | "
+            f"allocated: {row['allocated']} | "
+            f"delivered: {row['delivered']} | "
+            f"removed: {row['removed']}\n"
+        )
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n…"
+    await message.reply_text(text)
+
+
+async def stocklist_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+    if message is None:
+        return
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    product_id = None
+    status = None
+    if context.args:
+        try:
+            product_id = int(context.args[0])
+        except ValueError:
+            await message.reply_text(
+                "Usage:\n/stocklist\n/stocklist PRODUCT_ID\n/stocklist PRODUCT_ID available"
+            )
+            return
+        if len(context.args) >= 2:
+            status = context.args[1].strip().lower()
+
+    try:
+        rows = await db.list_inventory_records(
+            pool,
+            product_id=product_id,
+            status=status,
+            limit=50,
+        )
+    except ValueError as exc:
+        await message.reply_text(f"❌ {exc}")
+        return
+    except Exception:
+        logger.exception("Failed to list inventory.")
+        await message.reply_text("❌ Could not list inventory.")
+        return
+
+    if not rows:
+        await message.reply_text("No inventory rows found.")
+        return
+
+    lines = ["📋 STOCK LIST (secrets hidden)\n"]
+    for row in rows:
+        lines.append(
+            f"ID {row['id']} | product #{row['product_id']} {row.get('product_name', '')}\n"
+            f"  type: {row['item_type']} | status: {row['status']}\n"
+            f"  preview: {row.get('payload_preview', '')}\n"
+            f"  order_id: {row.get('order_id') or '-'}\n"
+        )
+
+    text = "\n".join(lines)
+    if len(text) > 4000:
+        text = text[:4000] + "\n…"
+    await message.reply_text(text)
+
+
+async def removestock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+    if message is None:
+        return
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+    if not context.args:
+        await message.reply_text(
+            "Usage:\n/removestock ID [ID2 ID3 ...]\n"
+            "Only available items can be removed."
+        )
+        return
+
+    try:
+        removed = await db.remove_available_inventory(pool, context.args)
+    except ValueError as exc:
+        await message.reply_text(f"❌ {exc}")
+        return
+    except Exception:
+        logger.exception("Failed to remove inventory.")
+        await message.reply_text("❌ Could not remove inventory.")
+        return
+
+    await message.reply_text(
+        f"✅ Removed {removed} available inventory item(s)."
+    )
+
+
+async def lowstock_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+    if message is None:
+        return
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+
+    threshold = 5
+    if context.args:
+        try:
+            threshold = int(context.args[0])
+        except ValueError:
+            await message.reply_text("Usage:\n/lowstock\n/lowstock THRESHOLD")
+            return
+
+    try:
+        rows = await db.get_low_stock_products(pool, threshold=threshold)
+    except Exception:
+        logger.exception("Failed to load low stock products.")
+        await message.reply_text("❌ Could not load low-stock list.")
+        return
+
+    if not rows:
+        await message.reply_text(
+            f"✅ No products at or below {threshold} available units."
+        )
+        return
+
+    lines = [f"⚠️ LOW STOCK (≤ {threshold})\n"]
+    for row in rows:
+        lines.append(
+            f"#{row['product_id']} {row['product_name']}: "
+            f"{row['available']} available"
+        )
+    await message.reply_text("\n".join(lines))
+
+
+async def redeliver_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not await _require_admin(update):
+        return
+
+    message = update.effective_message
+    pool = _get_pool(context)
+    if message is None:
+        return
+    if pool is None:
+        await message.reply_text("Database is unavailable.")
+        return
+    if not context.args:
+        await message.reply_text("Usage:\n/redeliver ORDER_NUMBER")
+        return
+
+    order_number = context.args[0].strip().upper()
+
+    try:
+        order = await db.get_order_by_number(pool, order_number)
+    except Exception:
+        logger.exception("Failed to load order %s for redeliver.", order_number)
+        await message.reply_text("❌ Could not load that order.")
+        return
+
+    if not order:
+        await message.reply_text("❌ Order not found.")
+        return
+    if order["status"] != "paid":
+        await message.reply_text("❌ Order is not paid.")
+        return
+
+    try:
+        items = await db.get_order_inventory_items(
+            pool, order["id"], include_payload=True
+        )
+    except Exception:
+        logger.exception(
+            "Failed to load inventory for redeliver %s.", order_number
+        )
+        await message.reply_text("❌ Could not load reserved inventory.")
+        return
+
+    if not items:
+        await message.reply_text(
+            "❌ No allocated/delivered inventory is linked to this order.\n"
+            "If this was fixed-text automatic or manual delivery, use the normal path instead."
+        )
+        return
+
+    amount = Decimal(str(order["total_amount"]))
+    item_blocks = []
+    for index, item in enumerate(items, start=1):
+        payload = (item.get("payload") or "").strip()
+        if not payload:
+            continue
+        if len(items) == 1:
+            item_blocks.append(payload)
+        else:
+            item_blocks.append(f"Item {index}:\n{payload}")
+
+    product_body = "\n\n".join(item_blocks).strip()
+    if not product_body:
+        await message.reply_text("❌ Reserved inventory payloads are empty.")
+        return
+
+    customer_text = (
+        "📦 ORDER REDELIVERY\n\n"
+        f"Order: {order['order_number']}\n"
+        f"Product: {order['product_name']}\n"
+        f"Total: {order['currency']} {amount:,.2f}\n\n"
+        "📦 YOUR PRODUCT:\n\n"
+        f"{product_body}\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
+    )
+    if len(customer_text) > 4096:
+        await message.reply_text("❌ Delivery message is too long for Telegram.")
+        return
+
+    try:
+        await context.bot.send_message(
+            chat_id=order["telegram_id"], text=customer_text
+        )
+    except Exception:
+        logger.exception("Redelivery message failed for %s.", order_number)
+        await message.reply_text(
+            "❌ Could not send redelivery message to the customer."
+        )
+        return
+
+    try:
+        await db.mark_inventory_delivered_for_order(pool, order["id"])
+        # Move order to delivered even if it was failed/processing
+        await pool.execute(
+            """
+            UPDATE orders
+            SET delivery_status = 'delivered',
+                delivered_at = COALESCE(delivered_at, now()),
+                updated_at = now()
+            WHERE id = $1
+              AND status = 'paid';
+            """,
+            order["id"],
+        )
+    except Exception:
+        logger.exception("Could not finalize redelivery status for %s.", order_number)
+        await message.reply_text(
+            "⚠️ Message sent, but delivery status could not be fully updated."
+        )
+        return
+
+    await message.reply_text(f"✅ Order {order_number} redelivered.")
+
 
 async def order_status_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.effective_message
