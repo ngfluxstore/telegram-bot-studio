@@ -2903,7 +2903,7 @@ async def set_bot_commands(application: Application) -> None:
 
     await application.bot.set_my_commands(customer_commands)
 
-        admin_commands = customer_commands + [
+    admin_commands = customer_commands + [
         BotCommand("addproduct", "Add a product"),
         BotCommand("products", "View all products"),
         BotCommand("editproduct", "Edit a product"),
