@@ -938,10 +938,8 @@ async def create_product(
     if delivery_mode not in ("automatic", "manual"):
         raise ValueError("Invalid delivery mode.")
 
-    if delivery_mode == "automatic" and not delivery_content:
-        raise ValueError(
-            "Automatic delivery requires delivery content."
-        )
+        # Option A: automatic + empty delivery_content means inventory delivery.
+    # automatic + non-empty delivery_content means fixed-text delivery.
 
     if delivery_mode == "manual":
         delivery_content = ""
