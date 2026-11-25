@@ -2903,13 +2903,19 @@ async def set_bot_commands(application: Application) -> None:
 
     await application.bot.set_my_commands(customer_commands)
 
-    admin_commands = customer_commands + [
+        admin_commands = customer_commands + [
         BotCommand("addproduct", "Add a product"),
         BotCommand("products", "View all products"),
         BotCommand("editproduct", "Edit a product"),
         BotCommand("deleteproduct", "Deactivate a product"),
         BotCommand("approve", "Approve a paid order"),
         BotCommand("deliver", "Manually deliver an order"),
+        BotCommand("addstock", "Add product inventory"),
+        BotCommand("stock", "View stock summary"),
+        BotCommand("stocklist", "List inventory rows"),
+        BotCommand("removestock", "Remove available stock"),
+        BotCommand("lowstock", "Show low-stock products"),
+        BotCommand("redeliver", "Redeliver reserved inventory"),
         BotCommand("tickets", "View open support tickets"),
         BotCommand("ticket", "View ticket details"),
         BotCommand("resolve", "Resolve support ticket"),
@@ -2959,7 +2965,13 @@ def register_handlers(application: Application) -> None:
     application.add_handler(CommandHandler("approve", approve_order_command))
     application.add_handler(CommandHandler("deliver", deliver_order_command))
     application.add_handler(CommandHandler("products", list_products))
-    application.add_handler(CommandHandler("deleteproduct", delete_product))
+    application.add_handler(CommandHandler("deleteproduct", delete_product))   
+    application.add_handler(CommandHandler("addstock", addstock_command))
+    application.add_handler(CommandHandler("stock", stock_command))
+    application.add_handler(CommandHandler("stocklist", stocklist_command))
+    application.add_handler(CommandHandler("removestock", removestock_command))
+    application.add_handler(CommandHandler("lowstock", lowstock_command))
+    application.add_handler(CommandHandler("redeliver", redeliver_command))
 
     # Payment support conversation
     payment_support_conversation = ConversationHandler(
