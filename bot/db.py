@@ -494,9 +494,8 @@ async def approve_order(pool, order_number, reviewed_by):
                 """
                 UPDATE orders
                 SET status = 'paid',
-                    delivery_status = CASE
+                                        delivery_status = CASE
                         WHEN delivery_mode = 'automatic'
-                             AND delivery_content <> ''
                         THEN 'processing'
                         ELSE 'pending'
                     END,
