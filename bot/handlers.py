@@ -1073,11 +1073,15 @@ async def approve_order_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     order = result["order"]
     amount = Decimal(str(order["total_amount"]))
+    delivery_mode = (order.get("delivery_mode") or "manual").strip().lower()
+    delivery_content = (order.get("delivery_content") or "").strip()
+    delivery_status = (order.get("delivery_status") or "").strip().lower()
 
+    # --- Automatic fixed-text delivery (unchanged behaviour) ---
     if (
-        order["delivery_mode"] == "automatic"
-        and order["delivery_status"] == "processing"
-        and order["delivery_content"]
+        delivery_mode == "automatic"
+        and delivery_status == "processing"
+        and delivery_content
     ):
         customer_text = (
             "✅ PAYMENT CONFIRMED!\n\n"
@@ -1085,34 +1089,27 @@ async def approve_order_command(update: Update, context: ContextTypes.DEFAULT_TY
             f"Product: {order['product_name']}\n"
             f"Total: {order['currency']} {amount:,.2f}\n\n"
             "📦 YOUR PRODUCT:\n\n"
-            f"{order['delivery_content']}\n\n"
-            "Thank you for choosing NGFLUX STORE! 💙"
-        )
-    else:
-        customer_text = (
-            "✅ PAYMENT CONFIRMED!\n\n"
-            f"Order: {order['order_number']}\n"
-            f"Product: {order['product_name']}\n"
-            f"Total: {order['currency']} {amount:,.2f}\n\n"
-            "⏳ Your payment has been verified successfully.\n"
-            "Your order is awaiting fulfilment by our team.\n\n"
+            f"{delivery_content}\n\n"
             "Thank you for choosing NGFLUX STORE! 💙"
         )
 
-    try:
-        await context.bot.send_message(chat_id=order["telegram_id"], text=customer_text)
-    except Exception:
-        logger.exception("Customer notification failed for %s.", order_number)
-        await message.reply_text(
-            f"⚠️ Order {order_number} is PAID, but customer notification failed."
-        )
-        return
+        try:
+            await context.bot.send_message(
+                chat_id=order["telegram_id"], text=customer_text
+            )
+        except Exception:
+            logger.exception("Customer notification failed for %s.", order_number)
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID, but customer notification failed."
+            )
+            return
 
-    if (
-        order["delivery_mode"] == "automatic"
-        and order["delivery_status"] == "processing"
-        and order["delivery_content"]
-    ):
         try:
             delivered = await db.mark_order_delivered(pool, order["id"])
         except Exception:
@@ -1127,8 +1124,202 @@ async def approve_order_command(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-    await message.reply_text(f"✅ Order {order_number} approved. Customer notified.")
+        await message.reply_text(
+            f"✅ Order {order_number} approved. Customer notified (automatic delivery)."
+        )
+        return
 
+    # --- Automatic inventory delivery (Option A: empty delivery_content) ---
+    if (
+        delivery_mode == "automatic"
+        and delivery_status == "processing"
+        and not delivery_content
+    ):
+        try:
+            allocation = await db.allocate_inventory_for_order(
+                pool,
+                order_id=order["id"],
+                product_id=order["product_id"],
+                quantity=order["quantity"],
+            )
+        except Exception:
+            logger.exception(
+                "Inventory allocation failed for order %s.", order_number
+            )
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID, but inventory allocation failed. "
+                "Check stock and use a redelivery step later if needed."
+            )
+            return
+
+        if allocation["result"] == "insufficient_stock":
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            available = allocation.get("available", 0)
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID, but stock is insufficient.\n"
+                f"Needed: {order['quantity']}\n"
+                f"Available: {available}\n"
+                "No inventory was allocated. Add stock, then handle delivery manually or retry later."
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=order["telegram_id"],
+                    text=(
+                        "✅ PAYMENT CONFIRMED!\n\n"
+                        f"Order: {order['order_number']}\n"
+                        f"Product: {order['product_name']}\n"
+                        f"Total: {order['currency']} {amount:,.2f}\n\n"
+                        "⏳ Your payment was verified. Fulfilment is being prepared by our team.\n\n"
+                        "Thank you for choosing NGFLUX STORE! 💙"
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "Customer paid notice failed for insufficient stock order %s.",
+                    order_number,
+                )
+            return
+
+        if allocation["result"] not in ("allocated", "already_allocated"):
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID, but inventory could not be allocated."
+            )
+            return
+
+        items = allocation.get("items") or []
+        item_blocks = []
+        for index, item in enumerate(items, start=1):
+            payload = (item.get("payload") or "").strip()
+            if not payload:
+                continue
+            if len(items) == 1:
+                item_blocks.append(payload)
+            else:
+                item_blocks.append(f"Item {index}:\n{payload}")
+
+        product_body = "\n\n".join(item_blocks).strip()
+        if not product_body:
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID and inventory was reserved, "
+                "but the inventory payload was empty. Contact support tooling / check stock rows."
+            )
+            return
+
+        customer_text = (
+            "✅ PAYMENT CONFIRMED!\n\n"
+            f"Order: {order['order_number']}\n"
+            f"Product: {order['product_name']}\n"
+            f"Total: {order['currency']} {amount:,.2f}\n\n"
+            "📦 YOUR PRODUCT:\n\n"
+            f"{product_body}\n\n"
+            "Thank you for choosing NGFLUX STORE! 💙"
+        )
+
+        if len(customer_text) > 4096:
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID and inventory was reserved, "
+                "but the delivery message is too long for Telegram. "
+                "Split stock items or shorten payloads, then redeliver later."
+            )
+            return
+
+        try:
+            await context.bot.send_message(
+                chat_id=order["telegram_id"], text=customer_text
+            )
+        except Exception:
+            logger.exception(
+                "Inventory delivery message failed for %s.", order_number
+            )
+            try:
+                await db.mark_order_delivery_failed(pool, order["id"])
+            except Exception:
+                logger.exception(
+                    "Could not mark delivery failed for %s.", order_number
+                )
+            await message.reply_text(
+                f"⚠️ Order {order_number} is PAID and inventory is reserved, "
+                "but Telegram delivery failed. Inventory was not released."
+            )
+            return
+
+        try:
+            await db.mark_inventory_delivered_for_order(pool, order["id"])
+            delivered = await db.mark_order_delivered(pool, order["id"])
+        except Exception:
+            logger.exception(
+                "Failed to finalize inventory delivery for %s.", order_number
+            )
+            await message.reply_text(
+                f"⚠️ Product message sent for {order_number}, "
+                "but delivery status could not be fully updated."
+            )
+            return
+
+        if not delivered:
+            await message.reply_text(
+                f"⚠️ Product message sent for {order_number}, "
+                "but order delivery status was not updated."
+            )
+            return
+
+        await message.reply_text(
+            f"✅ Order {order_number} approved. Inventory delivered to customer."
+        )
+        return
+
+    # --- Manual (or other) path: payment confirmed only ---
+    customer_text = (
+        "✅ PAYMENT CONFIRMED!\n\n"
+        f"Order: {order['order_number']}\n"
+        f"Product: {order['product_name']}\n"
+        f"Total: {order['currency']} {amount:,.2f}\n\n"
+        "⏳ Your payment has been verified successfully.\n"
+        "Your order is awaiting fulfilment by our team.\n\n"
+        "Thank you for choosing NGFLUX STORE! 💙"
+    )
+
+    try:
+        await context.bot.send_message(
+            chat_id=order["telegram_id"], text=customer_text
+        )
+    except Exception:
+        logger.exception("Customer notification failed for %s.", order_number)
+        await message.reply_text(
+            f"⚠️ Order {order_number} is PAID, but customer notification failed."
+        )
+        return
+
+    await message.reply_text(f"✅ Order {order_number} approved. Customer notified.")
 
 async def deliver_order_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not await _require_admin(update):
